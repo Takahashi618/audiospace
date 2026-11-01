@@ -1,0 +1,692 @@
+﻿audiospace 0.7.0 Manual
+
+Author: Takahashi. This is the English edition of the manual, written in October 2026.
+audiospace is a 3D audio component (a library) for games and tools for blind and visually impaired people, meant to be heard on headphones. It comes with the Localization Tool, which lets you check which direction sounds come from and how rooms sound. Both work with the keyboard and a screen reader (tested with NVDA and PC-Talker) alone.
+Every chapter has a heading, so you can move through this document by headings. A plain text edition with the same content is also included (Manual (English).txt). The Japanese edition is マニュアル.html.
+
+== Contents
+
+There are 15 chapters and one appendix. Chapters 2 to 12 explain the Localization Tool; chapter 13 explains how to use the library in your own game.
+1. Introduction
+2. Requirements
+3. Setting up
+4. Starting and quitting
+5. The screen
+6. Basic use
+7. The modes
+8. Settings that help you tell directions apart
+9. Reverb and spaces
+10. Designing your own spaces and reverbs
+11. Saved results
+12. List of keys
+13. Using the library in a game
+14. Troubleshooting
+15. License and credits
+
+Appendix: List of materials
+
+== 1. Introduction
+
+Sounds on headphones normally seem to play inside your head. audiospace processes sounds so that they arrive from a chosen direction and distance outside your head (binaural processing). It uses measured data on how the shape of the ear changes sound (head-related transfer functions, or HRTFs), so it can place sounds not only left and right, but also in front, behind, above and below.
+
+-- What it can do
+
+- Place sounds anywhere around the listener, at any distance, and move them
+- Add room reverb. The materials of the room (wood, concrete, carpet and so on) and the furniture and people in it change the sound
+- Help tell front from back and up from down (making sounds behind more muffled, making sounds above brighter, small automatic head movements, and more)
+- Let you choose, from measured data of 20 different ear shapes, the one that suits you
+
+-- The Localization Tool
+
+The Localization Tool is a window for checking which direction sounds seem to come from, and for practising telling them apart. You can measure your accuracy with a quiz, choose the ear-shape data that suits you, and compare how rooms sound. Game developers can use it to check how sounds will be heard.
+
+-- How to read this manual
+
+If you only want to use the Localization Tool, read from chapter 2 onwards. If you want to use the library in a game, install the components in chapter 3 and then go to chapter 13. Chapter 12 lists all the keys.
+
+== 2. Requirements
+
+- Tested on Windows 11, with the NVDA and PC-Talker screen readers
+- Python 3.10 or later (the author uses 3.14.5)
+- Headphones. With speakers, the left and right sounds mix and directions cannot be heard
+
+-- Components used
+
+The components are all installed by the steps in chapter 3. The library alone needs only numpy and scipy. The Localization Tool also needs these four:
+- wxPython: builds the window
+- accessible_output2: makes your screen reader speak. The tool works without it, but the tool's own announcements (correct, wrong and so on) are not spoken
+- sounddevice: plays the sound
+- sofar: reads the files of measured HRTFs (.sofa)
+
+In addition, if pyroomacoustics is installed, the reverb of rooms you design yourself can be computed precisely (chapter 9). Without it, the precise reverb of the provided rooms still works.
+The versions tested by the author are wxPython 4.2.5, numpy 2.4.6, scipy 1.17.1, sofar 1.2.3, sounddevice 0.5.5, accessible_output2 0.17 and pyroomacoustics 0.10.1.
+
+-- Language
+
+The Localization Tool and the library show their text in Japanese when the display language of Windows (or the preferred language of macOS) is Japanese, and in English otherwise. This covers the window, the spoken announcements, the results and the saved files. To choose the language yourself, set the environment variable AUDIOSPACE_LANG to en (English) or ja (Japanese) before starting. The language is decided when the program starts, so restart it after changing this.
+
+== 3. Setting up
+
+There are four steps. The last one is optional.
+
+-- 3.1 Put the folder in place
+
+Extract the distributed zip file and put the resulting folder in a folder you can write to, such as Documents. Do not put it inside Program Files. The Localization Tool writes saved results (the logs folder) and your own spaces (the settings folder) inside this folder.
+To extract the zip file in File Explorer, select it, open the context menu with the Applications key (or Shift+F10), and choose Extract All.
+
+-- 3.2 Install Python
+
+Install Python for Windows from python.org. The first screen of the installer has a check box called Add python.exe to PATH. Check it before pressing Install Now. If you do not, the next step will say that python cannot be found.
+
+-- 3.3 Install the components
+
+Open a command prompt in this folder and run one command.
+1. Open this folder in File Explorer
+2. Press Alt+D to move to the address bar, type cmd and press Enter. A command prompt opens in this folder
+3. Type the following line and press Enter. It takes a few minutes; it has finished when a line starting with Successfully installed appears
+
+    python -m pip install -e ".[app]"
+
+If it says that python cannot be found, run the same line with py instead of python at the start. The tool will then start with that same Python in chapter 4 (the launcher tries python first and uses py if python does not work).
+If you want the reverb of rooms you design yourself to be computed precisely, also run the following (optional).
+
+    python -m pip install pyroomacoustics
+
+-- 3.4 Check that it works (optional)
+
+Running the following in the same command prompt starts the automatic tests. They play no sound. They take a few minutes; if the last line says all passed, the components are installed correctly (the lines before it are in Japanese).
+
+    python -X utf8 tests\run_all.py
+
+== 4. Starting and quitting
+
+Open Start Localization Tool.bat in the folder to start the Localization Tool: select the file in File Explorer and press Enter. The file 定位確認ツールを起動.bat does the same thing (it is the Japanese name of the same launcher).
+A window called Localization Tool - audiospace opens, with the focus in the Status log field. At start this field contains the keyboard help, which you can read with the up and down arrows. Press F1 to read the same help in a window of its own (Escape closes it).
+You can also start it from a command prompt in this folder:
+
+    python -X utf8 demo\localization_app.py
+
+To quit, press Escape in the window.
+
+-- If it does not start
+
+If no window opens and a black window shows some messages and stops, something is missing. Usually the components of chapter 3 are not installed. Press any key to close the black window. See also chapter 14.
+
+== 5. The screen
+
+There is one window. From top to bottom it has the settings, the Status log field and the Results list. Tab moves through them from the top. The key in brackets after the name of an item (for example Alt+H) moves straight to that item.
+- Settings: the HRTF, the type of sound, reverb, the settings that help you tell directions apart, the difficulty and so on. Changes take effect at once
+- Status log: a read-only field with the guidance for each mode and the results
+- Results: the result of each answer, one per line
+
+Settings are not saved; every time the tool starts they return to their starting values. F9 reads the current settings.
+
+-- The settings
+
+Listed from the top of the screen (the order of Tab). The key in brackets after a name moves straight to that item. Items whose value at start is "no value" are controls that have no value. The table has 17 rows. The columns are Item, Type, Value at start, Possible values.
+- Item: HRTF (Alt+H) / Type: Choice / Value at start: Measured Viking pinna E / Possible values: 22 choices: Synthetic HRIR (no front/back difference, fewest dependencies); Measured Viking pinna A; Measured Viking pinna B; Measured Viking pinna C; Measured Viking pinna D; Measured Viking pinna E; Measured Viking pinna F; Measured Viking pinna G; Measured Viking pinna H; Measured Viking pinna I; Measured Viking pinna J; Measured Viking pinna K; Measured Viking pinna L; Measured Viking pinna M; Measured Viking pinna N; Measured Viking pinna O; Measured Viking pinna P; Measured Viking pinna Q; Measured Viking pinna R; Measured Viking pinna S; Measured Viking pinna T; Measured Viking without pinna
+- Item: Sound type (Alt+S) / Type: Choice / Value at start: Three noise bursts (easy to locate, recommended) / Possible values: 4 choices: Three noise bursts (easy to locate, recommended); Continuous noise; Click; Beep
+- Item: Head wobble (Alt+W) / Type: Choice / Value at start: Standard (8 degrees, recommended) / Possible values: 4 choices: Off; Subtle (4 degrees); Standard (8 degrees, recommended); Strong (14 degrees, triangle wave)
+- Item: Head tilt (Alt+T) / Type: Choice / Value at start: Off / Possible values: 4 choices: Off; Subtle (6 degrees); Standard (12 degrees); Strong (20 degrees)
+- Item: Reverb (Alt+R) / Type: Choice / Value at start: None / Possible values: 8 choices: None; bathroom; cathedral; cave; corridor; hall; small_room; warehouse
+- Item: Design a reverb (Alt+G) / Type: Button / Value at start: no value / Possible values: Opens a window when pressed
+- Item: Space (Alt+P) / Type: Choice / Value at start: None / Possible values: 11 choices: None; Room with wooden floor and walls; Room with wooden floor and concrete walls; Concrete room; Room with carpet and absorbing ceiling; Tiled bathroom; Concrete corridor; Stone hall; Empty road; Street between buildings; Narrow alley
+- Item: Design a space (Alt+E) / Type: Button / Value at start: no value / Possible values: Opens a window when pressed
+- Item: Furniture amount (Alt+M). Works only in closed rooms / Type: Choice / Value at start: None / Possible values: 4 choices: None; A little; Normal; A lot
+- Item: Number of people (Alt+N). Added to the space as standing people / Type: Number / Value at start: 0 / Possible values: 0 to 200
+- Item: Precise reverb (Alt+Q) / Type: Check box (Compute the reverb of the space precisely) / Value at start: Off / Possible values: On or off
+- Item: Difficulty (Alt+D) / Type: Choice / Value at start: 4 directions / Possible values: 4 choices: Left and right only; 4 directions; 8 directions; 12 directions
+- Item: Front/back emphasis, percent (Alt+B) / Type: Number / Value at start: 35 / Possible values: 0 to 90
+- Item: Up/down emphasis, percent (Alt+U) / Type: Number / Value at start: 0 / Possible values: 0 to 100
+- Item: Floor reflection (Alt+F) / Type: Check box (Add the floor reflection) / Value at start: Off / Possible values: On or off
+- Item: Status log (Alt+L) / Type: Read-only text / Value at start: no value / Possible values: The keyboard help at start; then mode guidance and results
+- Item: Results (Alt+K) / Type: List / Value at start: no value / Possible values: The result of each answer, one per line
+
+== 6. Basic use
+
+In every mode, you answer with the numeric keypad after the sound plays. Turn NumLock on (with NumLock off, the keypad keys work as arrows and other keys). Chapter 12 lists the answer keys.
+
+-- Answering
+
+In the modes where you answer a direction, the keys of the numeric keypad are laid out like the directions: 8 is front, 2 is back, 4 is left, 6 is right, 7 is front left, 9 is front right, 1 is back left and 3 is back right. As soon as you answer, it says something like "Question 1: Correct. The correct answer was front.", and after a short pause the next question plays.
+
+-- If you miss the sound
+
+- F4 plays the current question again
+- When Repeat is on (numpad 0 turns it on and off; it is on at start), the question sound keeps playing with pauses until you answer. If speech covers it, just wait
+- F6 stops the sound and the repeating
+
+-- Turning
+
+The left and right arrows turn you 15 degrees on the spot. The sounds do not move, so when you turn, sounds in front and sounds behind move in opposite directions. This helps when you are unsure whether a sound is in front or behind. Answer with the direction as seen from where you face now.
+Page Up and Page Down turn your face 15 degrees up or down (up to straight up or straight down, 90 degrees). In the up/down tests, answer with the height of the sound as seen from your body, whichever way your face points.
+
+-- Keys that read things out
+
+- F5: the results of the current mode
+- F9: the current settings
+- F10: the running totals of the ear-shape data (pinnae) (chapter 7)
+- F1: the keyboard help window
+
+== 7. The modes
+
+There are 3 modes that are not scored and 8 that are. A key starts each mode, and pressing the key of another mode switches to it. When you answer the last question of a scored mode, it reads the results and saves them (chapter 11).
+
+-- Preview (F2)
+
+A sound keeps circling around you, counterclockwise from the front (as seen from above). Press F2 again to stop. Changes to the settings apply to the circling sound at once, so this is a good way to hear what each setting does.
+
+-- Compare 8 directions (Ctrl+Shift+F2)
+
+Not scored. Numpad 1 to 9 (except 5) play a level sound from that direction. Before a quiz, you can listen to the difference between front, back and the diagonals as often as you like, in any order. Pressing a key does not speak, so you can focus on the sound. F6 or the key of another mode ends it.
+
+-- Compare heights (Shift+F2)
+
+Not scored. Numpad slash plays a sound straight up, 8 up (45 degrees), 5 level and 2 down (45 degrees), all in front of you. Use it to compare the four heights before an up/down test. It works only when a measured pinna (Measured Viking) is chosen in HRTF.
+
+-- Quiz (F3)
+
+Sounds play from various directions and you answer the direction. Choose the number of directions in Difficulty (left and right only, 4 directions (front, back, left and right), 8 directions or 12 directions). Besides your accuracy, the results count how often you confused front and back. This is the most common mistake when listening with someone else's ear-shape data.
+
+-- Training (F7)
+
+Directions you get wrong come back more often. After a wrong answer, the correct direction plays again, so listen closely for the difference. It ends after a set number of correct answers in a row.
+
+-- Rotation test (Ctrl+F2)
+
+A sound travels half a circle around you in 3 seconds, and you answer which way it went. For a level circle, answer numpad 4 for counterclockwise (front, then left, back, right) or 6 for clockwise. For a sound passing overhead, answer 8 for back to front or 2 for front to back. The starting point changes every time, and confusing front and back makes the direction sound reversed, so this tests front and back through movement. Sounds passing overhead are asked only when a measured pinna is chosen.
+
+-- Up/down test (Shift+F3) and up/down test from the front (Ctrl+F3)
+
+Answer the height of the sound: straight up, up, level or down (numpad slash, 8, 5 and 2). Shift+F3 mixes in the directions of the difficulty; Ctrl+F3 always plays from the front and changes only the height. They work only when a measured pinna is chosen. Down goes only to 45 degrees, because the measured data stops there.
+When the reference sound is on (numpad asterisk turns it on and off; it is on at start), a level sound from the same direction plays before the question sound, so you can answer whether the second sound is higher or lower than the first.
+
+-- Choose a pinna (F8) and choose a pinna for up and down (Ctrl+F8)
+
+Tries several sets of ear-shape data (pinnae) one after another, to find the one that suits you. F8 tests directions (front and back); Ctrl+F8 tests heights (up and down). Every round includes your current best pinna as a reference (listeners improve as they go, so differences only show within the same round). Results add up over time, and F10 reads the ranking. Try them all over several rounds.
+Choose the pinna that did best in HRTF in the settings. When a round ends, the tool switches from the pinna it was trying back to the one chosen in the settings.
+
+-- Head wobble measurement (F11)
+
+Questions with head wobble (chapter 8) and without it alternate, and the accuracy of each is compared. It does not say which condition a question uses. Do not turn with the arrow keys during the test (it makes the comparison less accurate).
+
+-- Number of questions
+
+The number of questions in the scored modes. Where it depends on the difficulty (the number of directions), it is given for each difficulty. The table has 8 rows. The columns are Mode, Key, Questions.
+- Mode: Quiz / Key: F3 / Questions: Left and right only: 10, 4 directions: 10, 8 directions: 16, 12 directions: 24
+- Mode: Training / Key: F7 / Questions: Correct in a row to finish: Left and right only: 8, 4 directions: 8, 8 directions: 8, 12 directions: 12
+- Mode: Choose a pinna / Key: F8 / Questions: Left and right only: 40, 4 directions: 40, 8 directions: 48, 12 directions: 48
+- Mode: Head wobble measurement / Key: F11 / Questions: Left and right only: 16, 4 directions: 16, 8 directions: 32, 12 directions: 48
+- Mode: Up/down test / Key: Shift+F3 / Questions: Left and right only: 24, 4 directions: 32, 8 directions: 48, 12 directions: 48
+- Mode: Up/down test from the front / Key: Ctrl+F3 / Questions: 24 (whatever the difficulty)
+- Mode: Choose a pinna for up and down / Key: Ctrl+F8 / Questions: 48 (whatever the difficulty)
+- Mode: Rotation test / Key: Ctrl+F2 / Questions: 24 (whatever the difficulty)
+
+== 8. Settings that help you tell directions apart
+
+With someone else's ear-shape data, it is easy to confuse front with back and up with down. The settings have six aids for this. The details of the numbers are in CUES.en.md in the same folder.
+
+-- Aids for front and back
+
+Front/back emphasis (percent, 35 at start):
+  The further behind a sound is, the quieter and more muffled it becomes. At 35 percent, a sound straight behind is about 0.65 times as loud, with the high frequencies slightly cut. It does not affect sounds straight above or below.
+Head wobble (Standard at start):
+  Adds a small automatic side-to-side movement of the head. When the head moves, sounds in front and sounds behind move in opposite directions, so you can tell front from back regardless of the shape of your ears. This is the most reliable aid.
+
+-- Aids for up and down
+
+Up/down emphasis (percent, 0 at start):
+  Makes higher sounds brighter and lower sounds more muffled. It is not how things naturally sound, but it is easy to learn. It follows the height as seen from your face, so facing up with Page Up makes level sounds darker.
+Head tilt (Off at start):
+  Adds an automatic sway of tilting your head toward each shoulder in turn. Sounds above and below move left and right in opposite directions, and level sounds in front do not move.
+Floor reflection (off at start):
+  Adds the sound that bounces off the floor. The higher the sound, the longer the gap between the direct sound and the reflection. When a Space is chosen, it already includes the floor reflection, so turn this off.
+Reference sound (numpad asterisk, on at start):
+  In the up/down tests, plays a level sound from the same direction before the question sound (chapter 7).
+
+-- Getting started with the aids
+
+Try the starting settings first. If some directions are confusing, add one aid at a time and listen to its effect. F11 measures the effect of head wobble. If up and down are hard to tell apart, setting Up/down emphasis to 30 to 50 percent may help.
+
+== 9. Reverb and spaces
+
+There are two ways to add the sound of a room. Reverb adds only the length of the echo. Space also creates where each reflection comes from, when it arrives and how it sounds. While a space is chosen, the Reverb setting is not used.
+
+-- Reverb
+
+Creates reverb without direction from the size of a room and how much it absorbs. It is light to compute.
+Rooms you can choose in Reverb in the settings. The table has 7 rows. The columns are Name, Description, Size, Reverb time.
+- Name: bathroom / Description: Small hard room. Strong early reflections and a metallic ring / Size: width 2.5, depth 2, height 2.4 metres / Reverb time: 1.5 seconds
+- Name: small_room / Description: Ordinary living room. Short, natural reverb / Size: width 4, depth 3.5, height 2.5 metres / Reverb time: 0.3 seconds
+- Name: corridor / Description: Long narrow corridor. Clear reflections front and back / Size: width 2, depth 18, height 2.6 metres / Reverb time: 0.6 seconds
+- Name: hall / Description: Concert hall size. Long, smooth reverb / Size: width 18, depth 26, height 9 metres / Reverb time: 2.5 seconds
+- Name: cathedral / Description: Stone cathedral. Very long reverb / Size: width 24, depth 60, height 22 metres / Reverb time: 8.0 seconds
+- Name: cave / Description: Cave. Irregular reverb with lingering lows / Size: width 12, depth 20, height 6 metres / Reverb time: 5.4 seconds
+- Name: warehouse / Description: Warehouse. Large but absorbent and clear / Size: width 30, depth 40, height 12 metres / Reverb time: 2.8 seconds
+
+-- Spaces
+
+Each of the six surfaces (floor, ceiling and four walls) has a material. Sound that bounces off a wall or the floor (early reflections) arrives from that surface's direction, coloured by its material. The length of the echo that follows (late reverb) also comes from the materials. Wood absorbs low sounds and carpet absorbs high sounds, so rooms of the same size can sound different.
+Places you can choose in Space in the settings. The reverb time is for middle sounds (1 kilohertz). The table has 10 rows. The columns are Name, Kind, Size, Materials, Reverb time.
+- Name: Room with wooden floor and walls / Kind: Room / Size: width 5, depth 4, height 2.7 metres / Materials: Floor: Wooden boards (16 mm, on studs); Walls: Wooden lining (12 mm); Ceiling: Plasterboard (two 13 mm layers, insulation inside) / Reverb time: 0.8 seconds
+- Name: Room with wooden floor and concrete walls / Kind: Room / Size: width 5, depth 4, height 2.7 metres / Materials: Floor: Wooden boards (16 mm, on studs); Walls: Rough concrete; Ceiling: Plasterboard (two 13 mm layers, insulation inside) / Reverb time: 2.0 seconds
+- Name: Concrete room / Kind: Room / Size: width 5, depth 4, height 2.7 metres / Materials: Floor: Concrete floor; Walls: Rough concrete; Ceiling: Rough concrete / Reverb time: 3.2 seconds
+- Name: Room with carpet and absorbing ceiling / Kind: Room / Size: width 5, depth 4, height 2.7 metres / Materials: Floor: Soft 10 mm carpet; Walls: Plasterboard (two 13 mm layers, insulation inside); Ceiling: Fibre absorber ceiling on perforated metal / Reverb time: 0.3 seconds
+- Name: Tiled bathroom / Kind: Room / Size: width 2.5, depth 2, height 2.4 metres / Materials: Floor: Smooth tiles; Left wall: Smooth tiles; Right wall: Smooth tiles; Front wall: Smooth tiles; Back wall: Wooden door; Ceiling: Plasterboard (two 13 mm layers, insulation inside) / Reverb time: 1.7 seconds
+- Name: Concrete corridor / Kind: Room / Size: width 2.2, depth 20, height 2.6 metres / Materials: Floor: Linoleum, rubber or cork tiles (on concrete); Walls: Rough concrete; Ceiling: Plasterboard (two 13 mm layers, insulation inside) / Reverb time: 2.6 seconds
+- Name: Stone hall / Kind: Room / Size: width 20, depth 30, height 12 metres / Materials: Floor: Marble floor; Walls: Limestone wall; Ceiling: Wooden lining (12 mm) / Reverb time: 6.3 seconds
+- Name: Empty road / Kind: Open place / Size: no limit / Materials: Floor: Rough concrete / Reverb time: none (open place)
+- Name: Street between buildings / Kind: Street between buildings / Size: street width 12, length 80, building height 20 metres / Materials: Floor: Rough concrete; Left wall: Rendered brick wall; Right wall: Rendered brick wall / Reverb time: 1.6 seconds
+- Name: Narrow alley / Kind: Street between buildings / Size: street width 3, length 40, building height 12 metres / Materials: Floor: Rough concrete; Left wall: Rough concrete; Right wall: Rough concrete / Reverb time: 0.9 seconds
+
+-- Furniture amount and number of people
+
+Even in a room of the same size, furniture and people change the sound. Furniture amount and Number of people in the settings add furniture and people to the chosen space. The reverb becomes shorter and quieter by as much as they absorb, and reflections from the floor and walls become weaker by as much as they block. Furniture works only in closed rooms; people are added to any space. The values are rough estimates to change the sound broadly, and where things stand is not modelled.
+Things you can put in a space. The absorption is for middle sounds (1 kilohertz), given as the area of a surface that absorbs completely. The larger the blocking area, the more it scatters reflections from the floor and walls. The table has 10 rows. The columns are Thing, Absorption, Blocking area.
+- Thing: standing person / Absorption: 0.46 square metres / Blocking area: 0.5 square metres
+- Thing: seated person / Absorption: 0.5 square metres / Blocking area: 0.4 square metres
+- Thing: sofa / Absorption: 1.4 square metres / Blocking area: 1.6 square metres
+- Thing: upholstered armchair / Absorption: 0.5 square metres / Blocking area: 0.6 square metres
+- Thing: wooden chair / Absorption: 0.04 square metres / Blocking area: 0.3 square metres
+- Thing: table / Absorption: 0.08 square metres / Blocking area: 1.2 square metres
+- Thing: full bookshelf / Absorption: 0.55 square metres / Blocking area: 1.5 square metres
+- Thing: bed / Absorption: 1.5 square metres / Blocking area: 3 square metres
+- Thing: wooden cabinet / Absorption: 0.05 square metres / Blocking area: 1 square metres
+- Thing: cardboard box / Absorption: 0.25 square metres / Blocking area: 0.5 square metres
+
+What each Furniture amount puts in the room. It grows with the floor area; the numbers here are for a floor of 20 square metres (for example 5 by 4 metres). People are not included. The table has 4 rows. The columns are Furniture amount, Per 20 square metres of floor.
+- Furniture amount: None / Per 20 square metres of floor: none
+- Furniture amount: A little / Per 20 square metres of floor: table 1, wooden chair 2, full bookshelf 1
+- Furniture amount: Normal / Per 20 square metres of floor: sofa 1, upholstered armchair 1, table 1, wooden chair 2, full bookshelf 1
+- Furniture amount: A lot / Per 20 square metres of floor: sofa 1, upholstered armchair 2, table 1, wooden chair 4, full bookshelf 2, bed 1, wooden cabinet 1, cardboard box 2
+
+-- Precise reverb
+
+Turning on Precise reverb in the settings replaces the late reverb of closed rooms with a precisely computed one. The provided closed rooms are computed already, so they switch at once. For closed rooms you design yourself, if pyroomacoustics is installed, it takes ten seconds or more to compute in the background; meanwhile the light version plays, and it switches when ready. Computed reverbs are saved and are ready at once next time. Spaces with open sides, such as a street between buildings, and spaces with furniture or people keep the light version.
+
+== 10. Designing your own spaces and reverbs
+
+The Design a space (Alt+E) and Design a reverb (Alt+G) buttons in the settings open a window of their own. In both, when you adjust the values and save them with a name, they appear in the Space and Reverb choices as "Yours: name", already chosen.
+
+-- Using the window
+
+1. In the first field, Start from, choose a provided space or reverb, or one you made. Its values fill the fields below
+2. Change the values in the fields. The Current settings field describes the result in words, such as the length of the reverb (Tab back to it to check)
+3. Play with these settings (Alt+P) lets you hear it from the front before saving
+4. Type a name in the Name field and press Save (Alt+S). Saving with the same name replaces it
+5. Escape or Close closes the window, and the sound returns to what is chosen in the settings
+
+To delete one you made, type its name in the Name field and press Delete (Alt+D) twice (no confirmation window opens).
+In the material lists, materials that suit the surface come first (floor materials for the floor, ceiling materials for the ceiling); the rest follow, starting with "Other". All the materials are in the appendix. Furniture amount can be chosen only when the kind is Room.
+
+-- Fields of the Design a space window
+
+The fields of the Design a space window. Listed in the order of Tab. The table has 33 rows. The columns are Field, Type, Range or choices.
+- Field: Start from. Choosing one loads its values into the fields below / Type: Choice / Range or choices: 10 choices: Room with wooden floor and walls; Room with wooden floor and concrete walls; Concrete room; Room with carpet and absorbing ceiling; Tiled bathroom; Concrete corridor; Stone hall; Empty road; Street between buildings; Narrow alley
+- Field: Name. Used when saving. Saving with the same name replaces it / Type: Text / Range or choices: Up to 40 characters
+- Field: Kind / Type: Choice / Range or choices: 3 choices: Room; Street between buildings; Open place
+- Field: Width (left to right), centimetres. For a street, the street width / Type: Number / Range or choices: 50 to 50000
+- Field: Depth (front to back), centimetres. For a street, the street length / Type: Number / Range or choices: 50 to 50000
+- Field: Height, centimetres. For a street, the building height / Type: Number / Range or choices: 50 to 50000
+- Field: Floor material / Type: Choice / Range or choices: 91 choices (the same as the list of materials in the appendix; materials that suit the surface come first)
+- Field: Ceiling material / Type: Choice / Range or choices: 91 choices (the same as the list of materials in the appendix; materials that suit the surface come first)
+- Field: Front wall material / Type: Choice / Range or choices: 91 choices (the same as the list of materials in the appendix; materials that suit the surface come first)
+- Field: Back wall material / Type: Choice / Range or choices: 91 choices (the same as the list of materials in the appendix; materials that suit the surface come first)
+- Field: Left wall material / Type: Choice / Range or choices: 91 choices (the same as the list of materials in the appendix; materials that suit the surface come first)
+- Field: Right wall material / Type: Choice / Range or choices: 91 choices (the same as the list of materials in the appendix; materials that suit the surface come first)
+- Field: Listener position, percent from the left wall / Type: Number / Range or choices: 5 to 95
+- Field: Listener position, percent from the back wall / Type: Number / Range or choices: 5 to 95
+- Field: Amount of furniture (rooms only). Choosing one fills in the furniture numbers below to suit the floor area / Type: Choice / Range or choices: 5 choices: Use the numbers below as they are; None; A little; Normal; A lot
+- Field: Standing person count / Type: Number / Range or choices: 0 to 1000
+- Field: Seated person count / Type: Number / Range or choices: 0 to 1000
+- Field: Sofa count / Type: Number / Range or choices: 0 to 1000
+- Field: Upholstered armchair count / Type: Number / Range or choices: 0 to 1000
+- Field: Wooden chair count / Type: Number / Range or choices: 0 to 1000
+- Field: Table count / Type: Number / Range or choices: 0 to 1000
+- Field: Full bookshelf count / Type: Number / Range or choices: 0 to 1000
+- Field: Bed count / Type: Number / Range or choices: 0 to 1000
+- Field: Wooden cabinet count / Type: Number / Range or choices: 0 to 1000
+- Field: Cardboard box count / Type: Number / Range or choices: 0 to 1000
+- Field: Reflection order (between facing surfaces) / Type: Number / Range or choices: 1 to 8
+- Field: Reflection level, percent / Type: Number / Range or choices: 0 to 300
+- Field: Reverb level, percent / Type: Number / Range or choices: 0 to 300
+- Field: Current settings / Type: Read-only text / Range or choices: Describes the sound with the current values
+- Field: Play with these settings (Alt+P) / Type: Button / Range or choices: Acts when pressed
+- Field: Save (Alt+S) / Type: Button / Range or choices: Acts when pressed
+- Field: Delete (Alt+D) / Type: Button / Range or choices: Acts when pressed
+- Field: Close / Type: Button / Range or choices: Acts when pressed
+
+-- Fields of the Design a reverb window
+
+The fields of the Design a reverb window. Listed in the order of Tab. The table has 12 rows. The columns are Field, Type, Range or choices.
+- Field: Start from. Choosing one loads its values into the fields below / Type: Choice / Range or choices: 7 choices: bathroom; cathedral; cave; corridor; hall; small_room; warehouse
+- Field: Name. Used when saving. Saving with the same name replaces it / Type: Text / Range or choices: Up to 40 characters
+- Field: Reverb time, milliseconds (until the sound drops by 60 decibels) / Type: Number / Range or choices: 100 to 8000
+- Field: Room size, percent (spacing of the echoes) / Type: Number / Range or choices: 30 to 250
+- Field: High damping, percent (more is more muffled) / Type: Number / Range or choices: 0 to 95
+- Field: Stereo width, percent / Type: Number / Range or choices: 0 to 100
+- Field: Reverb level, percent / Type: Number / Range or choices: 0 to 300
+- Field: Current settings / Type: Read-only text / Range or choices: Describes the sound with the current values
+- Field: Play with these settings (Alt+P) / Type: Button / Range or choices: Acts when pressed
+- Field: Save (Alt+S) / Type: Button / Range or choices: Acts when pressed
+- Field: Delete (Alt+D) / Type: Button / Range or choices: Acts when pressed
+- Field: Close / Type: Button / Range or choices: Acts when pressed
+
+-- Where they are saved
+
+Your own spaces and reverbs are saved in user_presets.json in the settings folder of this folder. If this file becomes damaged, the tool still starts: it keeps the unreadable file with .broken added to its name and starts with none. This is mentioned at the top of the Status log field at start.
+
+== 11. Saved results
+
+When a scored mode ends, the results are saved automatically in the logs folder of this folder, and the name of the saved file is read out. The file name joins the name of the mode, the date and the time (for example quiz_20261016_093000.txt). The mode names are quiz for the quiz, training for training, calib for choosing a pinna, calib_elev for choosing a pinna for up and down, ab for the head wobble measurement, elev for the up/down test, elev_front for the up/down test from the front, and rotation for the rotation test.
+The file is plain text, in the display language of the tool, with the mode, the date and time, the settings at the time, a summary of the results and the result of each question, in that order. You can read it in Notepad.
+The running totals of choosing a pinna build up in pinna_records.json (directions) and pinna_records_elev.json (heights) in the logs folder. To start the totals again, close the tool and delete these files.
+
+== 12. List of keys
+
+This list is made from the tool's F1 help and from the key tables the tool actually uses.
+
+-- Mode keys
+
+Keys that start a mode. There are 11 of them.
+F2:
+  Start and stop the preview (the sound circles around you)
+Shift+F2:
+  Compare heights (not scored). Numpad slash plays a sound straight up, 8 up, 5 level and 2 down, in front of you. Use it to compare the four heights before a test. Pressing a key does not speak.
+Ctrl+Shift+F2:
+  Compare 8 directions (not scored). Numpad 1 to 9 (except 5) play a level sound from that direction. The keys are laid out like the directions: 8 front, 2 back, 4 left, 6 right. Directions are as seen from where you face now. Pressing a key does not speak.
+F3:
+  Quiz (10 to 24 questions depending on the difficulty, scored)
+F7:
+  Training (focuses on directions you miss, ends after a streak)
+F8:
+  Choose a pinna (tries several pinnae to find one that suits you). Every round includes the current best as a reference. Listeners improve as they go, so differences only show within one round. Results add up, so you can try them all over several rounds.
+F11:
+  Measure the head wobble effect (alternates with and without). It does not say which condition a question uses. Avoid turning with the arrow keys during the test for a fairer comparison.
+Shift+F3:
+  Up/down test (straight up, up, level or down). Only with a measured Viking HRTF. The directions come from the difficulty, but you answer only the height.
+Ctrl+F3:
+  Up/down test from the front (straight up, up, level or down). The sound always comes from the front, and only the height changes. Use it to learn how the heights sound different.
+Ctrl+F8:
+  Choose a pinna for up and down. The up/down version of F8. It tries pinnae one after another with the up/down test from the front. Its totals are kept apart from the front/back ones, and F10 reads them after those.
+Ctrl+F2:
+  Rotation test (24 questions). A sound travels half a circle around you. For a level circle, answer counterclockwise or clockwise. Counterclockwise is as seen from above: front, then left, back, right. The starting point changes every time. Confusing front and back makes the direction sound reversed. For a sound passing overhead, answer back to front or front to back (asked only with a measured Viking HRTF).
+
+-- Control keys
+
+Keys that work in any mode. There are 9 of them.
+Numpad 0:
+  Repeat on or off (on at start). When on, the question sound plays again and again with pauses until you answer with the keypad. If speech covers it, just wait.
+Numpad *:
+  Reference sound on or off (on at start). In the up/down tests, a level sound from the same direction plays before the question sound. You can answer whether the second sound is higher or lower than the first.
+F4:
+  Hear the question again
+F5:
+  Read the results
+F6:
+  Stop the sound (repeating stops too; F4 starts it again)
+F9:
+  Read the current settings
+F10:
+  Read the pinna totals
+F1:
+  Open this help (up and down arrows read line by line, Escape closes)
+Escape:
+  Quit
+
+-- Turning keys
+
+Keys that turn you and your face. There are 3 of them. The sounds do not move.
+Left/Right arrows:
+  Turn 15 degrees on the spot
+Page Up:
+  Face 15 degrees further up (up to straight up, 90 degrees)
+Page Down:
+  Face 15 degrees further down (down to straight down)
+
+-- Direction answers
+
+Keys for answering a direction in the quiz, training, choosing a pinna and the head wobble measurement, and the directions they play when comparing 8 directions. The keys are laid out like the directions. The table has 8 rows. The columns are Key, Direction.
+- Key: Numpad 7 / Direction: front left
+- Key: Numpad 8 / Direction: front
+- Key: Numpad 9 / Direction: front right
+- Key: Numpad 4 / Direction: left
+- Key: Numpad 6 / Direction: right
+- Key: Numpad 1 / Direction: back left
+- Key: Numpad 2 / Direction: back
+- Key: Numpad 3 / Direction: back right
+
+-- Height answers
+
+Keys for answering a height in the up/down tests and when choosing a pinna for up and down, and the heights they play when comparing heights. They run down the keypad from top to bottom. The table has 4 rows. The columns are Key, Height.
+- Key: Numpad slash / Height: straight up
+- Key: Numpad 8 / Height: up
+- Key: Numpad 5 / Height: level
+- Key: Numpad 2 / Height: down
+
+-- Rotation answers
+
+Keys for answering in the rotation test. The position of the key shows which way the sound moves. The table has 4 rows. The columns are Key, Rotation.
+- Key: Numpad 8 / Rotation: overhead, back to front
+- Key: Numpad 4 / Rotation: counterclockwise
+- Key: Numpad 6 / Rotation: clockwise
+- Key: Numpad 2 / Rotation: overhead, front to back
+
+== 13. Using the library in a game
+
+This chapter is for people who want to use audiospace in a game or tool written in Python. It introduces the main features. All the features and details are in README.en.md in the same folder.
+
+-- Installing
+
+Run the following in this folder. Add playback to play sound on a real device.
+
+    python -m pip install -e ".[playback]"
+
+To use the distributed wheel (audiospace-0.7.0-py3-none-any.whl), run the following in the folder that has the file. The wheel does not include the measured data of the 20 pinnae; it includes the default pinna (pinna E, horizontal plane only).
+
+    python -m pip install "audiospace-0.7.0-py3-none-any.whl[playback]"
+
+-- Coordinates and facing
+
+Coordinates are in metres: x is east, y is north and z is up. The listener's facing (yaw_deg) is an angle counterclockwise from north: 0 faces north and 90 faces west (left).
+
+-- Playing sounds
+
+    from audiospace import SpatialPlayer
+
+    player = SpatialPlayer.open(head_wobble="clear")   # open the audio output (with head wobble)
+    h = player.play("beacon.wav", position=(3.0, 4.0, 0.0), loop=True)
+    player.play_ui("menu_move.wav")                    # menu sounds get no direction
+    player.set_listener((0.0, 0.0, 0.0), yaw_deg=90)   # the listener turns left
+    player.engine.set_source_position(h, (0.0, 6.0, 0.0))   # move the sound
+    player.stop_sound(h, fade_ms=30)                   # fade out over 30 ms and stop
+    print(player.status())                             # a status line to read aloud
+    player.stop()
+
+play takes the name of a file such as a wav, or an array of samples. A file is read once and remembered, so playing it many times does not read it again. Sounds that have finished are cleaned up automatically.
+
+-- Helping to tell front, back, up and down apart
+
+    player.set_emphasis(front_back=0.35, elevation=0.35)   # front/back and up/down emphasis (0 to 1)
+
+    from audiospace import ROLL_PRESETS
+    player.engine.set_roll_wobble(ROLL_PRESETS["clear"])   # head tilt (12 degrees)
+
+-- Adding reverb
+
+    player.set_reverb("hall")                # reverb without direction (names in chapter 9)
+    player.set_space("wood_room")            # a space with materials (names from space_labels())
+    player.set_space(None)                   # remove the space
+
+When you switch spaces, the old reverb dies away naturally and the new one fades in smoothly. You can also register a space for each place and switch automatically to the one where the listener is (see Moving between places in README.en.md).
+
+-- Adding furniture and people
+
+    from audiospace import space_preset, furnish_counts
+
+    room = space_preset("wood_room")
+    counts = furnish_counts(room.size[0] * room.size[1], "normal")   # furniture to suit the floor area
+    player.set_space(room.with_contents(dict(counts, person=4)))    # furniture and 4 people
+
+When things are placed or people come in during the game, pass the space again with the new contents. The sound changes smoothly.
+
+-- Making spaces and reverbs from a design
+
+Spaces and reverbs can also be made from a dictionary (a design) that can be written as JSON as it is. What you make and save in the Localization Tool (user_presets.json in the settings folder) has the same form.
+
+    from audiospace import space_from_spec, reverb_from_spec
+
+    room = space_from_spec({
+        "kind": "room",                     # room, street (between buildings) or open
+        "size": [6.0, 5.0, 2.8],            # width, depth, height (metres)
+        "materials": {"floor": "wood_16mm", "ceiling": "plasterboard",
+                      "north": "glass_window", "south": "wooden_door",
+                      "west": "brickwork", "east": "curtains_velvet"},
+        "contents": {"sofa": 1, "person": 2}})
+    player.set_space(room)
+    player.set_reverb(reverb_from_spec({"rt60": 2.5}, player.engine.sample_rate))
+
+Taking the listener as facing north, north is the front wall, south the back wall, west the left wall and east the right wall. The material names are in the Name (program) column of the appendix. If a value is wrong, the error message says which one, in the display language.
+
+-- Display language
+
+Text meant for people, such as names, status lines and error messages, is Japanese when the operating system's display language is Japanese and English otherwise (chapter 2). To choose, set AUDIOSPACE_LANG to en or ja before starting the program. Lists of names such as FURNISH_LEVELS are made when audiospace is imported, so the language cannot be changed while the program is running. audiospace.language() returns the language in use.
+
+-- Trying without sound
+
+Setting the environment variable AUDIOSPACE_SILENT to 1 makes it run without opening the audio output. It is used for automatic tests. If you use the engine (SpatialEngine) directly, which does not open the audio output, you get the finished sound as an array.
+
+-- Credits when you distribute
+
+The default pinna data is licensed under CC BY 4.0, so when you distribute it in a game you must show where it comes from inside your product (an About screen, the manual and so on). attribution() returns the text (chapter 15).
+
+== 14. Troubleshooting
+
+There is no sound:
+  Check that your headphones are the default playback device in Windows. Also, if the environment variable AUDIOSPACE_SILENT is set to 1, no sound plays (a setting for the automatic tests, for example after running set AUDIOSPACE_SILENT=1 in a command prompt). Starting the tool with the launcher clears this setting.
+The tool does not speak:
+  accessible_output2 may not be installed. Run the command of chapter 3 again. The fields of the window can still be read with your screen reader.
+Nothing happens when I answer with the keypad:
+  Check that NumLock is on. Also, answers are not accepted before the question sound plays (including the moment just after an answer, while the result is spoken).
+The up/down tests or Compare heights do not start:
+  Choose a measured pinna (Measured Viking) in HRTF. The synthetic data has no information about up and down.
+Precise reverb stays on the light version:
+  Spaces with open sides and spaces with furniture or people use the light version. Closed rooms you design yourself cannot be computed without pyroomacoustics. F9 reads which reverb is playing.
+I cannot tell front from back:
+  Set Head wobble to Standard or Strong, and listen while turning with the left and right arrows. Finding a pinna that suits you with Choose a pinna (F8) may also help.
+The text is in the wrong language:
+  The language follows the display language of Windows. To choose it, set AUDIOSPACE_LANG to en or ja (chapter 2), for example by running set AUDIOSPACE_LANG=en in a command prompt and then starting the tool from that command prompt.
+My own spaces are gone:
+  If the saved file is damaged, the tool starts with none. The damaged file is kept in the settings folder with .broken added to its name (chapter 10).
+
+== 15. License and credits
+
+audiospace is under the MIT License: you are free to use it in games, sell it and use it in research. The full text is in LICENSE in the same folder. There is no warranty.
+The default pinna and the measured pinna data in the assets folder come from the Viking HRTF Dataset v2 and are used under CC BY 4.0. They are not covered by the MIT License. When you distribute them in your product, show the following text (ATTRIBUTION.en.md has the details).
+This software includes HRTF data from the Viking HRTF Dataset v2 by Spagnol, Miccini and Unnthorsson (2020, https://doi.org/10.5281/zenodo.4160401), based on The Viking HRTF dataset by Spagnol, Purkhus, Bjornsson and Unnthorsson (SMC 2019), used under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Modified: resampled, truncated to two receivers, restricted to the horizontal plane.
+This text is for using the default pinna (pinna E, horizontal plane only). The text for using the pinna data in the assets folder (.sofa) unchanged is in ATTRIBUTION.en.md.
+The table of material absorption was made from the material data of pyroomacoustics (MIT License) (ATTRIBUTION.en.md).
+
+-- How this was made
+
+The code of audiospace was written by an AI model (Claude, by Anthropic). The author's part was deciding what to build, listening tests with headphones (the author chose the default pinna by comparing them by ear), checking that it works and deciding what to fix, and publishing and maintaining it. The code is verified by automatic tests and by the author's checks on a real computer, but mistakes may remain.
+
+-- Support
+
+A way to support development is being prepared.
+
+== Appendix. List of materials
+
+Materials you can use for the surfaces of a space. Their absorption values were exported from the material data of pyroomacoustics. The open side reflects nothing; use it for the sky, or for the side where a road runs on.
+Materials in the order of their categories. The name (program) is what you write in a design or a program to choose the material. The table has 91 rows. The columns are Category, Name, Name (program).
+- Category: Open side / Name: Nothing comes back (sky, or the road running on) / Name (program): open
+- Category: Hard walls and floors / Name: Average hard surface (brick, plaster, hard floor) / Name (program): hard_surface
+- Category: Hard walls and floors / Name: Rendered brick wall / Name (program): brickwork
+- Category: Hard walls and floors / Name: Rough concrete / Name (program): rough_concrete
+- Category: Hard walls and floors / Name: Smooth unpainted concrete / Name (program): unpainted_concrete
+- Category: Hard walls and floors / Name: Rough lime wash / Name (program): rough_lime_wash
+- Category: Hard walls and floors / Name: Smooth brickwork, flush joints (painted) / Name (program): smooth_brickwork_flush_pointing
+- Category: Hard walls and floors / Name: Smooth brickwork (10 mm deep joints) / Name (program): smooth_brickwork_10mm_pointing
+- Category: Hard walls and floors / Name: Brick wall with rough plaster / Name (program): brick_wall_rough
+- Category: Hard walls and floors / Name: Smooth tiles / Name (program): ceramic_tiles
+- Category: Hard walls and floors / Name: Limestone wall / Name (program): limestone_wall
+- Category: Hard walls and floors / Name: Reverberation chamber wall (absorbs almost nothing) / Name (program): reverb_chamber
+- Category: Hard walls and floors / Name: Concrete floor / Name (program): concrete_floor
+- Category: Hard walls and floors / Name: Marble floor / Name (program): marble_floor
+- Category: Light walls and linings / Name: Plasterboard (two 13 mm layers, insulation inside) / Name (program): plasterboard
+- Category: Light walls and linings / Name: Wooden lining (12 mm) / Name (program): wooden_lining
+- Category: Wood / Name: Wooden boards (1.6 cm, on thick planks) / Name (program): wood_1.6cm
+- Category: Wood / Name: Thin plywood panelling / Name (program): plywood_thin
+- Category: Wood / Name: Wooden boards (16 mm, on studs) / Name (program): wood_16mm
+- Category: Wood / Name: Wooden audience floor (2 layers, over concrete) / Name (program): audience_floor
+- Category: Wood / Name: Wooden stage floor (2 layers, air space below) / Name (program): stage_floor
+- Category: Wood / Name: Wooden door / Name (program): wooden_door
+- Category: Glass / Name: Single pane of glass (3 mm) / Name (program): glass_3mm
+- Category: Glass / Name: Glass window / Name (program): glass_window
+- Category: Glass / Name: Lead glazing / Name (program): lead_glazing
+- Category: Glass / Name: Double glazing (gap 30 mm or more) / Name (program): double_glazing_30mm
+- Category: Glass / Name: Double glazing (10 mm gap) / Name (program): double_glazing_10mm
+- Category: Glass / Name: Double glazing (lead frame inside) / Name (program): double_glazing_inside
+- Category: Floor coverings / Name: Linoleum, rubber or cork tiles (on concrete) / Name (program): linoleum_on_concrete
+- Category: Floor coverings / Name: Cotton carpet / Name (program): carpet_cotton
+- Category: Floor coverings / Name: Loop pile carpet (9.5 mm, with underlay) / Name (program): carpet_tufted_9.5mm
+- Category: Floor coverings / Name: Thin carpet (glued to concrete) / Name (program): carpet_thin
+- Category: Floor coverings / Name: 6 mm carpet (closed-cell foam underlay) / Name (program): carpet_6mm_closed_cell_foam
+- Category: Floor coverings / Name: 6 mm carpet (open-cell foam underlay) / Name (program): carpet_6mm_open_cell_foam
+- Category: Floor coverings / Name: 9 mm carpet (felt underlay) / Name (program): carpet_tufted_9m
+- Category: Floor coverings / Name: 5 mm needle felt (glued to concrete) / Name (program): felt_5mm
+- Category: Floor coverings / Name: Soft 10 mm carpet / Name (program): carpet_soft_10mm
+- Category: Floor coverings / Name: Long pile carpet / Name (program): carpet_hairy
+- Category: Floor coverings / Name: 5 mm rubber mat / Name (program): carpet_rubber_5mm
+- Category: Floor coverings / Name: Carpet (with underlay) / Name (program): carpet_1.35_kg_m2
+- Category: Floor coverings / Name: 29 mm coconut fibre felt / Name (program): cocos_fibre_roll_29mm
+- Category: Curtains and blinds / Name: Heavy cotton curtains (draped) / Name (program): curtains_cotton_0.5
+- Category: Curtains and blinds / Name: Thin curtains / Name (program): curtains_0.2
+- Category: Curtains and blinds / Name: Cotton cloth (draped) / Name (program): curtains_cotton_0.33
+- Category: Curtains and blinds / Name: Densely woven window curtains / Name (program): curtains_densely_woven
+- Category: Curtains and blinds / Name: Vertical blinds (half open) / Name (program): blinds_half_open
+- Category: Curtains and blinds / Name: Vertical blinds (fully open) / Name (program): blinds_open
+- Category: Curtains and blinds / Name: Velvet curtains / Name (program): curtains_velvet
+- Category: Curtains and blinds / Name: Curtain fabric (15 cm from the wall) / Name (program): curtains_fabric
+- Category: Curtains and blinds / Name: Curtain fabric (draped, 15 cm from the wall) / Name (program): curtains_fabric_folded
+- Category: Curtains and blinds / Name: Glass fibre curtains / Name (program): curtains_glass_mat
+- Category: Curtains and blinds / Name: Studio curtains / Name (program): studio_curtains
+- Category: Seats (empty) / Name: Wooden chairs without cushions / Name (program): chairs_wooden
+- Category: Seats (empty) / Name: Plastic chairs / Name (program): chairs_unoccupied_plastic
+- Category: Seats (empty) / Name: Medium upholstered concert chairs / Name (program): chairs_medium_upholstered
+- Category: Seats (empty) / Name: Heavily upholstered seats / Name (program): chairs_heavy_upholstered
+- Category: Seats (empty) / Name: Cloth upholstered chairs / Name (program): chairs_upholstered_cloth
+- Category: Seats (empty) / Name: Leather upholstered chairs / Name (program): chairs_upholstered_leather
+- Category: Seats (empty) / Name: Lightly upholstered chairs / Name (program): chairs_upholstered_moderate
+- Category: Audience and performers / Name: Area with audience, orchestra or choir / Name (program): audience_orchestra_choir
+- Category: Audience and performers / Name: Audience on wooden chairs (1 per square metre) / Name (program): audience_wooden_chairs_1_m2
+- Category: Audience and performers / Name: Audience on wooden chairs (2 per square metre) / Name (program): audience_wooden_chairs_2_m2
+- Category: Audience and performers / Name: Orchestra with instruments / Name (program): orchestra_1.5_m2
+- Category: Audience and performers / Name: Audience (0.72 per square metre) / Name (program): audience_0.72_m2
+- Category: Audience and performers / Name: Audience (1 per square metre) / Name (program): audience_1_m2
+- Category: Audience and performers / Name: Audience (1.5 per square metre) / Name (program): audience_1.5_m2
+- Category: Audience and performers / Name: Audience (2 per square metre) / Name (program): audience_2_m2
+- Category: Audience and performers / Name: Audience on upholstered chairs (wider chairs) / Name (program): audience_upholstered_chairs_1
+- Category: Audience and performers / Name: Audience on upholstered chairs (narrower chairs) / Name (program): audience_upholstered_chairs_2
+- Category: Wall absorbers / Name: Fabric-covered absorber panel (rock wool, lighter) / Name (program): panel_fabric_covered_6pcf
+- Category: Wall absorbers / Name: Fabric-covered absorber panel (rock wool, heavier) / Name (program): panel_fabric_covered_8pcf
+- Category: Wall absorbers / Name: Facing brick with open joints / Name (program): facing_brick
+- Category: Wall absorbers / Name: 25 mm acoustic plaster / Name (program): acoustical_plaster_25mm
+- Category: Wall absorbers / Name: 50 mm rock wool (dense) / Name (program): rockwool_50mm_80kgm3
+- Category: Wall absorbers / Name: 50 mm rock wool (loose) / Name (program): rockwool_50mm_40kgm3
+- Category: Wall absorbers / Name: 50 mm mineral wool (glued to the wall) / Name (program): mineral_wool_50mm_40kgm3
+- Category: Wall absorbers / Name: 50 mm mineral wool (30 cm from the wall) / Name (program): mineral_wool_50mm_70kgm3
+- Category: Wall absorbers / Name: Perforated gypsum board / Name (program): gypsum_board
+- Category: Wall absorbers / Name: Perforated veneered chipboard / Name (program): perforated_veneered_chipboard
+- Category: Wall absorbers / Name: Fibre absorber (20 mm mineral fibre) / Name (program): fibre_absorber_1
+- Category: Wall absorbers / Name: Fibre absorber (soft fibre mats) / Name (program): fibre_absorber_2
+- Category: Ceiling absorbers / Name: Plasterboard ceiling (large space above) / Name (program): ceiling_plasterboard
+- Category: Ceiling absorbers / Name: Fibre absorber ceiling on perforated metal / Name (program): ceiling_fibre_absorber
+- Category: Ceiling absorbers / Name: Fissured ceiling tiles / Name (program): ceiling_fissured_tile
+- Category: Ceiling absorbers / Name: Perforated gypsum board ceiling / Name (program): ceiling_perforated_gypsum_board
+- Category: Ceiling absorbers / Name: Melamine foam ceiling tiles / Name (program): ceiling_melamine_foam
+- Category: Ceiling absorbers / Name: Metal panel absorber ceiling / Name (program): ceiling_metal_panel
+- Category: Special absorbers / Name: Microperforated foil / Name (program): microperforated_foil_kaefer
+- Category: Special absorbers / Name: Microperforated glass sheets / Name (program): microperforated_glass_sheets
+- Category: Special absorbers / Name: Hanging absorber panels (40 cm apart) / Name (program): hanging_absorber_panels_1
+- Category: Special absorbers / Name: Hanging absorber panels (70 cm apart) / Name (program): hanging_absorber_panels_2

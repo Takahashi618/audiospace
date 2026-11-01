@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+build/
+*.egg-info/
+dist/
+*.whl
+
+# 定位確認ツールが書き出すもの（聴き取りの結果と、自分で作った空間・残響）
+logs/
+settings/
+
+# テストの結果とデモが書き出す音
+tests/*_result.txt
+demo/out/

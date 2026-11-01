@@ -1,0 +1,51 @@
+# audiospace のパッケージ定義。
+#
+# 既定 HRTF（audiospace/data/default_horizontal.npz、約205KB、CC BY 4.0 の
+# 表示義務あり — ATTRIBUTION.md 参照）はパッケージデータとして wheel に
+# 入る。assets/（Viking の SOFA 21種 61MB と焼き込み残響 IR）はリポジトリ
+# 運用専用で、配布物には含めない。
+#
+#   python -m pip install -e .            開発中はこれ
+#   python -m pip install -e .[full]      任意依存もまとめて
+#   python -m pip install -e .[app]       定位確認ツール（demo/）を使う
+#   python -m pip wheel --no-deps .       配布用 wheel の作成
+
+[build-system]
+requires = ["setuptools>=77"]  # license の SPDX 表記（PEP 639）に必要
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audiospace"
+version = "0.7.0"
+description = "視覚障害者向けゲーム・ツールのためのバイノーラル3D音響ライブラリ（OpenAL 非依存）"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Takahashi" }]
+# 本体は MIT。既定 HRTF は CC BY 4.0 なので ATTRIBUTION.md（と英語版）も wheel に入れる
+license = "MIT"
+license-files = ["LICENSE", "ATTRIBUTION.md", "ATTRIBUTION.en.md"]
+keywords = ["binaural", "hrtf", "3d-audio", "accessibility", "audio-game"]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+# 実機再生（SpatialPlayer.open）と wav/flac/ogg のデコード
+playback = ["sounddevice", "soundfile"]
+# mp3 デコードと高品質リサンプリング
+decode = ["miniaudio", "samplerate"]
+# 実測 HRTF（.sofa）の読み込み — 既定アセットの利用だけなら不要
+sofa = ["sofar"]
+# 残響 IR の生成（実行時は不要。tools/build_reverb_presets.py 用）
+rooms = ["pyroomacoustics"]
+full = ["sounddevice", "soundfile", "miniaudio", "samplerate",
+        "sofar", "pyroomacoustics"]
+# 定位確認ツール（demo/localization_app.py）。画面・読み上げ・再生・実測の耳介
+app = ["wxPython", "accessible_output2", "sounddevice", "sofar"]
+
+[tool.setuptools]
+packages = ["audiospace"]
+
+[tool.setuptools.package-data]
+audiospace = ["data/*.npz", "data/*.json"]

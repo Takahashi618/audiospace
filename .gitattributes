@@ -1,0 +1,12 @@
+# 利用者向けの txt と起動用の bat は、どの設定で取り出しても CRLF にする。
+# txt はメモ帳などの古いエディタのため、bat は cmd.exe のため。
+# tools/build_manual.py は txt を BOM 付き UTF-8・CRLF で作り、テスト
+# （t_manual_current）は作り直した中身と1バイトずつ比べるので、LF で
+# 取り出されると「古い」と判定される。
+/マニュアル.txt text eol=crlf
+/はじめにお読みください.txt text eol=crlf
+/定位確認ツールを起動.bat text eol=crlf
+# 名前の空白は [[:space:]] で書く（空白は属性の区切りになるため）
+/Manual[[:space:]](English).txt text eol=crlf
+/README[[:space:]](English).txt text eol=crlf
+/Start[[:space:]]Localization[[:space:]]Tool.bat text eol=crlf
