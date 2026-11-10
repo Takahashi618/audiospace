@@ -214,7 +214,16 @@ class BandFdnReverb(VectorFdnReverb):
         super().__init__(sample_rate, rt60=float(bands[3]),
                          room_scale=room_scale, damping=0.0, width=width)
         # 短すぎる線は伸ばす（ブロック単位の計算が成り立つように）
-        lengths = [max(int(block) + 1, line.shape[0]) for line in self._lines]
+        lengths: list[int] = []
+        for line in self._lines:
+            n = max(int(block) + 1, line.shape[0])
+            # 小さい部屋で同じ長さの線が並ぶと金属的に響くので、重なったら
+            # 空いている次の素数にする（互いに素な長さが滑らかな響きの前提）
+            while n in lengths:
+                n += 1
+                while any(n % d == 0 for d in range(2, int(n ** 0.5) + 1)):
+                    n += 1
+            lengths.append(n)
         self._lines = [np.zeros(n, dtype=np.float32) for n in lengths]
         self._pos = [0] * len(lengths)
         self.rt60_bands = bands
@@ -353,11 +362,8 @@ def rt60_of(ir: np.ndarray, sample_rate: int) -> float:
     if energy[0] <= 0:
         return 0.0
     db = 10.0 * np.log10(np.maximum(energy / energy[0], 1e-12))
-    try:
-        start = int(np.argmax(db <= -5.0))
-        end = int(np.argmax(db <= -25.0))
-    except ValueError:
-        return 0.0
+    start = int(np.argmax(db <= -5.0))
+    end = int(np.argmax(db <= -25.0))
     if end <= start:
         return 0.0
     t = np.arange(start, end) / sample_rate

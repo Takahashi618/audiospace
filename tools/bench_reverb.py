@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-os.environ.setdefault("AUDIOSPACE_SILENT", "1")
+os.environ["AUDIOSPACE_SILENT"] = "1"
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 

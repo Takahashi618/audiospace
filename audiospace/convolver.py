@@ -3,8 +3,8 @@
 Measured on this machine (CPython 3.14, block=512 @ 48 kHz, 128-tap HRIR):
 256 simultaneous sources cost 1.99 ms against a 10.67 ms budget, and the
 result matches direct convolution to within 4.5e-08.  (That figure predates
-the 2026-10 changes below; see tools/bench_polyphony_report.txt for the
-whole-engine numbers.)
+the 2026-10 changes below; tools/bench_polyphony.py measures the
+whole engine.)
 
 Directional crossfade
 ---------------------

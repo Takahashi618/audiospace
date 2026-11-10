@@ -276,10 +276,16 @@ def find_space_ir(space: Space, sample_rate: int,
         if not folder.exists():
             continue
         exact = folder / f"{key}_{int(sample_rate)}.npz"
-        candidates = ([exact] if exact.exists()
-                      else sorted(folder.glob(f"{key}_*.npz")))
-        if candidates:
-            found = SpaceIr.load(candidates[0]).resampled(int(sample_rate))
+        # 書きかけ（.part.npz）は候補にしない。読めないファイルは「無い」と
+        # 同じに扱い、次の候補を試す（例外にすると空間を選ぶたびに失敗する）
+        candidates = ([exact] if exact.exists() else [])
+        candidates += [c for c in sorted(folder.glob(f"{key}_*.npz"))
+                       if ".part" not in c.name and c != exact]
+        for path in candidates:
+            try:
+                found = SpaceIr.load(path).resampled(int(sample_rate))
+            except Exception:                    # noqa: BLE001
+                continue
             _MEMORY[(key, int(sample_rate))] = found
             return found
     return None

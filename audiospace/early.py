@@ -31,6 +31,9 @@ from .acoustics import (AIR_ABSORPTION, SPEED_OF_SOUND, ReflectionPath,
 
 #: 一度に鳴らす反射の最大本数（エンジンが行を確保する数）
 MAX_PATHS = 24
+#: 閉じた面を抜けたときに反射を消す（戻ったときに入れる）時間、秒。
+#: 空間を切り替えるときの既定のつなぎ（transition_s）と同じ長さ
+EDGE_FADE_S = 0.3
 
 
 class EarlyReflections:
@@ -81,8 +84,12 @@ class EarlyReflections:
         self._zi = np.zeros((count, 2, 2))
         self._delay = np.full(count, -1, dtype=np.intp)
         self._last_position: tuple | None = None
+        self._last_inside: np.ndarray | None = None
+        self._presence = 1.0            # 閉じた面の内外のつなぎの倍率
 
     def reset(self) -> None:
+        self._last_inside = None
+        self._presence = 1.0
         self._history[:] = 0.0
         self._write = 0
         self._zi[:] = 0.0
@@ -104,7 +111,8 @@ class EarlyReflections:
         idx = (start[:, None] + self._arange[None, :]) % size
         return self._history[idx]
 
-    def process(self, dry: np.ndarray, listener_position
+    def process(self, dry: np.ndarray, listener_position,
+                hold_outside: bool = False
                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """1ブロック進める。
 
@@ -130,10 +138,27 @@ class EarlyReflections:
         self._last_position = tuple(float(v) for v in p)
         empty = (np.zeros((0, n), dtype=np.float32), np.zeros((0, 3)),
                  np.zeros(0))
-        if not len(self._chains) or not self.space.contains(p):
+        inside = self.space.contains(p)
+        if inside:
+            self._last_inside = p.copy()
+        # 閉じた面を抜けても、反射をその場で切らない（波形が途切れてプツッと
+        # 鳴る）。最後に中にいた位置で続けながら EDGE_FADE_S で消し、戻ったら
+        # 同じ時間で入れる。hold_outside のときは消す速さをエンジンが決める
+        g0 = self._presence
+        if hold_outside:
+            g1 = g0
+        else:
+            step = n / (self.sample_rate * EDGE_FADE_S)
+            g1 = min(1.0, g0 + step) if inside else max(0.0, g0 - step)
+        sounding = inside or (self._last_inside is not None
+                              and (hold_outside or g0 > 0.0))
+        self._presence = g1 if sounding else 0.0
+        if not len(self._chains) or not sounding:
             self._delay[:] = -1
             self._zi[:] = 0.0
             return empty
+        if not inside:
+            p = self._last_inside
 
         coord = p[self._axis]
         offset = self._sign * coord + self._const - coord
@@ -144,9 +169,9 @@ class EarlyReflections:
                 * self.space.early_gain)
         max_len = self.max_delay_s * SPEED_OF_SOUND
         valid = (length > 1e-6) & (length <= max_len) & (gain >= self.min_gain)
+        # 経路は作るときに MAX_PATHS 本以下に絞ってあるので、ここで選び直す
+        # ことはない
         chosen = np.flatnonzero(valid)
-        if chosen.size > MAX_PATHS:
-            chosen = chosen[np.argsort(-gain[chosen])[:MAX_PATHS]]
         # 今回鳴らさない経路は状態を捨てる（戻ってきたら最初から）
         dropped = np.ones(len(self._chains), dtype=bool)
         dropped[chosen] = False
@@ -178,6 +203,8 @@ class EarlyReflections:
         amp = broadband_air[chosen] / (1.0 + length[chosen]) \
             * self.space.early_gain
         out *= amp[:, None].astype(np.float32)
+        if g0 != 1.0 or g1 != 1.0:
+            out *= (g0 + (g1 - g0) * self._ramp)[None, :]
 
         dirs = np.zeros((chosen.size, 3))
         dirs[np.arange(chosen.size), self._axis[chosen]] = np.sign(

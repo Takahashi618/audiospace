@@ -58,7 +58,7 @@ def run(n_sources: int, seconds: float, audible: bool,
         player.engine.set_reverb(VectorFdnReverb(rate, rt60=1.6))
         reverb_label = "FDN"
 
-    gain = 1.0 if audible else 0.0
+    gain = 0.1 if audible else 0.0   # 最大64音源が重なるので控えめに
     handles = []
     rng = np.random.default_rng(4)
     for i in range(n_sources):

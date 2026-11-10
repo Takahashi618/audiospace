@@ -1,4 +1,4 @@
-﻿audiospace 0.7.0 マニュアル
+﻿audiospace 0.7.1 マニュアル
 
 作者: Takahashi。この文書は2026年10月16日に作りました。
 audiospace は、視覚障害者向けのゲームやツールのための、ヘッドホンで聞く3D音響の部品（ライブラリ）です。音の聞こえる方向や響きを確かめる「定位確認ツール」が付いています。どちらもキーボードとスクリーンリーダー（PC-Talker・NVDA）だけで使えます。
@@ -482,9 +482,9 @@ Page Up と Page Down で、顔を15度ずつ上と下に向けられます（�
 
     python -m pip install -e ".[playback]"
 
-配布の wheel（audiospace-0.7.0-py3-none-any.whl）を使う場合は、ファイルのあるフォルダで次を実行します。wheel には実測の耳介20種類のデータは入らず、既定の耳介（耳介E、水平面だけ）が入ります。
+配布の wheel（audiospace-0.7.1-py3-none-any.whl）を使う場合は、ファイルのあるフォルダで次を実行します。wheel には実測の耳介20種類のデータは入らず、既定の耳介（耳介E、水平面だけ）が入ります。
 
-    python -m pip install "audiospace-0.7.0-py3-none-any.whl[playback]"
+    python -m pip install "audiospace-0.7.1-py3-none-any.whl[playback]"
 
 ◆ 座標と向き
 

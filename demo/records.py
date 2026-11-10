@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -187,18 +188,37 @@ class RecordStore:
         self.path = Path(path) if path else DEFAULT_PATH
         self.fb_name = fb_name if fb_name is not None else FB_NAME
         self.records: dict[str, PinnaRecord] = {}
+        #: 読めなかったときの説明（空なら問題なし）。アプリは起動時に「状況」の
+        #: 欄の先頭に書く
+        self.load_error = ""
         self.load()
 
     # -- 永続化 -------------------------------------------------------
+    def _set_aside(self, why) -> None:
+        """読めないファイルを .broken に移して残す（消すと積み上げた成績が
+        失われる。次の保存で上書きされるのも防ぐ）。"""
+        broken = self.path.with_suffix(self.path.suffix + ".broken")
+        try:
+            os.replace(self.path, broken)
+        except OSError:
+            pass
+        self.load_error = tr(
+            f"耳介の通算成績のファイルが読めないため、{broken.name} に移して"
+            f"空から始めます（{why}）",
+            f"The pinna totals file cannot be read, so it was moved to "
+            f"{broken.name} and you start with none ({why}).")
+
     def load(self) -> None:
+        self.load_error = ""
         if not self.path.exists():
             return
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            # 壊れていても起動は止めない。次の保存で作り直される。
+            items = list(raw.get("records", []))
+        except (OSError, ValueError, AttributeError, TypeError) as exc:
+            self._set_aside(exc)
             return
-        for item in raw.get("records", []):
+        for item in items:
             try:
                 rec = PinnaRecord(**item)
             except TypeError:
@@ -219,9 +239,11 @@ class RecordStore:
                      "聞き手の上達による交絡を除くためにこうしている。"),
             "records": [asdict(r) for r in self.records.values()],
         }
-        self.path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8")
+        # 一時ファイルに書いてから置き換える（途中で落ちても元が壊れない）
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, self.path)
 
     # -- 更新 ---------------------------------------------------------
     def update(self, scores, anchor_tag: str | None = None,

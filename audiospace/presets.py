@@ -211,14 +211,21 @@ def load_all(sample_rate: int = 48000,
     """
     folder = Path(directory) if directory else REVERB_ASSET_DIR
     out: dict[str, RoomIr] = {}
+    exact: set[str] = set()
     if not folder.exists():
         return out
     for path in sorted(folder.glob("*.npz")):
         room = RoomIr.load(path)
         name = room.preset.name
-        if name in out and out[name].sample_rate == sample_rate:
+        if name in exact:
             continue            # already have an exact-rate version
-        out[name] = room.resampled(sample_rate)
+        is_exact = room.sample_rate == sample_rate
+        # resampled() の後は必ず求めたレートなので、変換前のレートで判定する。
+        # ちょうどのレートは、先に見つけた別のレートに勝つ
+        if is_exact or name not in out:
+            out[name] = room.resampled(sample_rate)
+            if is_exact:
+                exact.add(name)
     return out
 
 

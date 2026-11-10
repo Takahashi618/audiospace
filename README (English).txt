@@ -1,4 +1,4 @@
-﻿audiospace 0.7.0 - README (English)
+﻿audiospace 0.7.1 - README (English)
 
 audiospace is a 3D audio component (a library) for games and tools for blind and visually impaired people, meant to be heard on headphones.
 It comes with the Localization Tool, which lets you check which direction sounds come from and how rooms sound. Both work with the keyboard and a screen reader (NVDA, PC-Talker) alone.

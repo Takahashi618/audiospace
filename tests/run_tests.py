@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-os.environ.setdefault("AUDIOSPACE_SILENT", "1")
+os.environ["AUDIOSPACE_SILENT"] = "1"
 # 表示の言語を日本語に固定する（テストが期待する文は日本語）
 os.environ["AUDIOSPACE_LANG"] = "ja"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -2859,6 +2859,165 @@ def t_review_emphasis_idle() -> str:
     return "オフのあいだは何もせず、オフにした直後に1回だけ状態を消す"
 
 
+@test("review2: 止めている音・全体を止めている間の fade 停止は、その場で外れる")
+def t_review2_fade_inactive() -> str:
+    engine = make_engine()
+    loop = BufferSource(np.full(SR, 0.1, np.float32), loop=True)
+    h = engine.add_source(loop, position=(0.0, 2.0, 0.0))
+    engine.render()
+    engine.set_source_active(h, False)
+    engine.remove_source(h, fade_ms=30)
+    for _ in range(5):
+        engine.render()
+    assert engine.active_sources == 0, "止めた音が枠を握ったまま"
+    h2 = engine.add_source(BufferSource(np.full(SR, 0.1, np.float32), loop=True),
+                           position=(0.0, 2.0, 0.0))
+    engine.render()
+    engine.set_paused(True)
+    engine.remove_source(h2, fade_ms=30)
+    engine.set_paused(False)
+    engine.render()                    # 直前の音の畳み込みの尾だけは残る
+    assert float(np.max(np.abs(engine.render()))) == 0.0, "再開後に鳴った"
+    return "止めた音の fade 停止で枠が返り、一時停止中の fade 停止は再開後に鳴らない"
+
+
+@test("review2: 音源が NaN を返しても、1ブロックだけ無音で後は元に戻る")
+def t_review2_nan_recovers() -> str:
+    engine = make_engine()
+    count = {"n": 0}
+
+    def bad(n):
+        count["n"] += 1
+        x = np.zeros(n, np.float32)
+        if count["n"] == 3:
+            x[10] = np.nan
+        return x
+
+    engine.add_source(CallbackSource(bad), position=(0.0, -2.0, 0.0))
+    engine.add_source(BufferSource(np.full(SR * 2, 0.1, np.float32), loop=True),
+                      position=(0.0, 2.0, 0.0))
+    peaks = [float(np.max(np.abs(engine.render()))) for _ in range(20)]
+    assert engine.nonfinite_blocks <= 2, engine.nonfinite_blocks
+    assert peaks[-1] > 0.0, "その後ずっと無音"
+    return f"無音にしたのは {engine.nonfinite_blocks} ブロックだけ"
+
+
+@test("review2: 壁を抜けて出ても、前の空間の反射は消えるまで続く")
+def t_review2_early_hold() -> str:
+    from audiospace import Space
+    engine = make_engine()
+    room = Space.room((5.0, 4.0, 2.7), floor="concrete_floor",
+                      walls="rough_concrete", ceiling="rough_concrete",
+                      listener=(0, 0, 0), at=(0.5, 0.5), name="room")
+    street = Space(origin=(-6.0, 2.0, -1.6), size=(12.0, 30.0, 20.0),
+                   materials={"west": "brickwork", "east": "brickwork",
+                              "south": "open", "north": "open",
+                              "floor": "rough_concrete", "ceiling": "open"},
+                   name="street")
+    engine.set_spaces([street, room], late=False)
+    engine.add_source(BufferSource(tone(220.0, 4.0), loop=True),
+                      position=(0.0, 0.5, 0.0), relative=True)
+    for _ in range(60):
+        engine.set_listener((0.0, 1.9, 0.0))
+        engine.render()
+    engine.set_listener((0.0, 2.05, 0.0))
+    engine.render()
+    assert engine.space.name == "street" and engine._old_early is not None
+    sig, _, _ = engine._old_early.process(np.zeros(BLOCK, np.float32),
+                                          (0.0, 2.05, 0.0),
+                                          hold_outside=True)
+    assert len(sig) > 0, "消えていく反射が0本になった"
+    return f"外に出た直後も前の反射が {len(sig)} 本続く"
+
+
+@test("review2: set_space のまま壁の外へ出ても反射はその場で切れず、戻ると滑らかに入る")
+def t_review2_set_space_edge() -> str:
+    from audiospace import Space
+
+    def run(with_space: bool) -> np.ndarray:
+        engine = make_engine(limiter=False)
+        if with_space:
+            engine.set_space(Space.room(
+                (5.0, 4.0, 2.7), floor="concrete_floor",
+                walls="rough_concrete", ceiling="rough_concrete",
+                listener=(0, 0, 0), at=(0.5, 0.5)), late=False)
+        engine.add_source(BufferSource(tone(220.0, 4.0), loop=True),
+                          position=(0.0, 0.5, 0.0), relative=True)
+        out = []
+        for i in range(140):
+            y = 2.05 if 60 <= i < 100 else 1.9     # 北の壁は y=2.0
+            engine.set_listener((0.0, y, 0.0))
+            out.append(engine.render())
+        return np.concatenate(out)[:, 0]
+
+    refl = run(True) - run(False)
+
+    def peak(block: int) -> float:
+        return float(np.max(np.abs(refl[block * BLOCK:(block + 1) * BLOCK])))
+
+    before = peak(59)
+    assert before > 0.05, before
+    assert peak(61) > 0.8 * before, ("外へ出た直後に切れた", peak(61), before)
+    assert peak(95) < 1e-6, ("外にいる間も鳴り続けている", peak(95))
+    assert peak(100) < 0.2 * before, ("戻った瞬間に全量で鳴った", peak(100))
+    assert peak(135) > 0.8 * before, ("戻っても反射が戻らない", peak(135))
+    return (f"出る直前 {before:.3f}、出た直後 {peak(61):.3f}、外 {peak(95):.1e}、"
+            f"戻った直後 {peak(100):.3f}、戻って 0.4秒後 {peak(135):.3f}")
+
+
+@test("review2: 小さい部屋の速い残響の遅延線は、同じ長さが並ばない")
+def t_review2_distinct_lines() -> str:
+    from audiospace import BandFdnReverb
+    for scale, block in ((0.3, 512), (0.3, 1024), (0.5, 1024)):
+        rev = BandFdnReverb(SR, [0.5] * 7, room_scale=scale, block=block)
+        lens = [len(x) for x in rev._lines]
+        assert len(set(lens)) == len(lens), lens
+        assert min(lens) > block
+    return "どの大きさでも8本とも別の長さ"
+
+
+@test("review2: load_all は、ちょうどのレートのファイルを優先する")
+def t_review2_load_all_exact() -> str:
+    from audiospace import BUILTIN_PRESETS, RoomIr, load_all
+    pre = BUILTIN_PRESETS["hall"]
+    with tempfile.TemporaryDirectory() as tmp:
+        RoomIr(pre, np.ones((2, 441), np.float32), 44100).save(
+            Path(tmp) / "hall_44100.npz")
+        RoomIr(pre, np.full((2, 480), 2.0, np.float32), 48000).save(
+            Path(tmp) / "hall_48000.npz")
+        got = load_all(48000, tmp)["hall"]
+        assert got.meta == {} and abs(float(got.ir.mean()) - 2.0) < 1e-6
+    return "48000 のファイルが選ばれた"
+
+
+@test("review2: 精密版の尾の書きかけ・壊れたファイルは無いものとして扱う")
+def t_review2_broken_tail() -> str:
+    from audiospace import Space, precise
+    sp = Space.room((3.3, 4.4, 2.2), floor="concrete_floor",
+                    walls="rough_concrete", ceiling="rough_concrete")
+    key = precise.space_key(sp)
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / f"{key}_48000.part.npz").write_bytes(b"PK\x03\x04 x")
+        (Path(tmp) / f"{key}_44100.npz").write_bytes(b"not a zip")
+        assert precise.find_space_ir(sp, 48000, tmp) is None
+    return "例外にならず、見つからない扱い"
+
+
+@test("review2: 排他モードで開いたら、読み上げも排他モードになる")
+def t_review2_exclusive_text() -> str:
+    from audiospace.device import DeviceChoice
+    from audiospace.player import _mark_exclusive
+    wasapi = DeviceChoice(0, "Dev", "Windows WASAPI", SR, 10.0)
+    assert "排他" in _mark_exclusive(wasapi, True).describe()
+    assert "共有" in _mark_exclusive(wasapi, False).describe()
+    mme = DeviceChoice(0, "Dev", "MME", SR, 90.0)
+    assert "共有" in _mark_exclusive(mme, True).describe()
+    direct = SpatialPlayer(make_engine(), wasapi, exclusive=True)
+    assert "排他" in direct.status(), direct.status()
+    return "WASAPI の排他だけが排他と読まれる"
+
+
+
 @test("i18n: 表示の言語は AUDIOSPACE_LANG か OS の表示言語で決まり、日本語以外は英語")
 def t_language() -> str:
     import json
@@ -2935,6 +3094,11 @@ TESTS = [
     t_coeff_no_boost, t_stereo_occlusion_state, t_ramp_semantics,
     t_rate_loop_points, t_rate_rejects_source, t_cache_byte_cap,
     t_reopen,
+    # 2026-11-10 のレビュー対応
+    t_review2_fade_inactive, t_review2_nan_recovers, t_review2_early_hold,
+    t_review2_distinct_lines, t_review2_load_all_exact,
+    t_review2_broken_tail, t_review2_exclusive_text,
+    t_review2_set_space_edge,
 ]
 
 

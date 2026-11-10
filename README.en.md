@@ -11,8 +11,9 @@ can go into **software that you sell without having to disclose your
 source**. Only the default HRTF is CC BY 4.0 and needs a credit
 (`ATTRIBUTION.en.md`).
 
-It was made as a replacement for the OpenAL Python bindings (PyOpenAL /
-cyal / synthizer), which had no wheels for CPython 3.14.
+It was made to have a sound component that does not depend on OpenAL, is
+under the MIT License, and lets you choose an HRTF that suits your ears
+(OpenAL Soft is LGPL and has few HRTF profiles).
 
 ## Display language
 
@@ -44,7 +45,7 @@ The author did not write the code. The author's part was:
 - Checking the behaviour and deciding what to fix.
 - Publishing, answering questions and maintenance.
 
-The code is checked by 228 automated tests and by the author on real
+The code is checked by 241 automated tests and by the author on real
 hardware, but like any code it may still contain mistakes. It comes without
 warranty.
 
@@ -72,8 +73,8 @@ or working notes.
 Installing the wheel (use the real file name):
 
 ```
-python -m pip install audiospace-0.7.0-py3-none-any.whl
-python -m pip install "audiospace-0.7.0-py3-none-any.whl[playback]"
+python -m pip install audiospace-0.7.1-py3-none-any.whl
+python -m pip install "audiospace-0.7.1-py3-none-any.whl[playback]"
 ```
 
 The second line is for playing on a real device. With the wheel alone there
@@ -319,7 +320,6 @@ Notes:
 - Processing time (performance core, 128 sources): 2.2 ms with the hall IR
   reverb, 2.9 ms with a space. On an efficiency core, the 99th percentile of
   128 sources plus a space is right at the budget (10.2 to 10.5 ms).
-  `tools/bench_space_report.txt`
 - The decay of each band is approximated with two shelves (low and high), so
   the reverb time may differ from the target by 20 to 30 percent (1.8
   seconds against a target of 1.35 seconds at 4 kHz in the concrete room)
@@ -342,7 +342,7 @@ energy as the fast version, so switching does not change the volume.
 It differs from the fast version (Eyring's formula) in rooms where the
 absorption is uneven. In a room with a carpet floor and an absorbing ceiling
 but reflective walls, the fast version gives 0.27 seconds and the precise
-version 0.72 seconds (only the precise computation can show the sound
+version 0.66 seconds (only the precise computation can show the sound
 bouncing on between the walls).
 
 - The 7 provided closed rooms are baked already (`assets/space_ir/`, 8.4 MB
@@ -757,7 +757,7 @@ Run this in the audiospace folder:
 python -X utf8 tests\run_all.py
 ```
 
-It runs 5 suites, 228 tests in all (the silent setting is applied
+It runs 5 suites, 241 tests in all (the silent setting is applied
 internally). The test output is in Japanese, and the last line also says
 "all passed" in English. To run them one by one:
 

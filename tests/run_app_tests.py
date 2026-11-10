@@ -1617,6 +1617,145 @@ def t_manual_current(frame: MainFrame) -> str:
     return lines[-1] if lines else ""
 
 
+@test("review2: 答えた直後の F4 は、次の問題を鳴らさず聞き直しにも数えない")
+def t_review2_f4_wait(frame: MainFrame) -> str:
+    from demo.quiz import Difficulty, QuizSession
+
+    assert frame.ensure_player()
+    real = wx.CallLater
+    wx.CallLater = lambda ms, fn, *a, **k: None
+    try:
+        frame.session = QuizSession(difficulty=Difficulty.EIGHT, n_trials=4,
+                                    seed=1)
+        frame.mode = "quiz"
+        frame.play_current()
+        assert frame.try_answer(wx.WXK_NUMPAD8)
+        frame.replay()
+        assert frame.session.trials[1].replays == 0, "聞き直しに数えました"
+        assert not frame._accepting, "次の問題が鳴りました"
+        frame.play_current()               # 次の問題が鳴った後の F4 は効く
+        frame.replay()
+        assert frame.session.trials[1].replays == 1, "F4 が効きません"
+    finally:
+        wx.CallLater = real
+        frame._pending_next = False
+        _reset(frame)
+    return "待ちの間は受け付けず、次の問題が鳴った後は聞き直せる"
+
+
+@test("review2: 答えた後の遅延の音は、別のモードへ移る・断られると鳴らない")
+def t_review2_delayed_cancel(frame: MainFrame) -> str:
+    from demo.quiz import Difficulty, TrainingSession
+
+    assert frame.ensure_player()
+    captured: list = []
+    played: list = []
+    real = wx.CallLater
+    wx.CallLater = lambda ms, fn, *a, **k: captured.append(fn)
+    frame.play_at = lambda *a, **k: played.append(a)
+
+    def answer_wrong() -> list:
+        """訓練で間違える。予約された処理（先頭が正解の音）を取り出して返す。"""
+        captured.clear()
+        frame.session = TrainingSession(difficulty=Difficulty.EIGHT, seed=2)
+        frame.mode = "training"
+        frame._accepting = True
+        truth = frame.session.current().truth_deg
+        frame.submit((truth + 90.0) % 360.0)
+        pending = captured[:]
+        captured.clear()
+        return pending
+
+    try:
+        answer_wrong()[0]()
+        assert len(played) == 1, "モードを移らないのに正解の音が鳴りません"
+        played.clear()
+
+        pending = answer_wrong()
+        frame.start_quiz()
+        pending[0]()
+        assert not played, "クイズへ移った後に前の音が鳴りました"
+
+        pending = answer_wrong()
+        frame.hrir_supports_elevation = lambda: False
+        frame.start_elevation()
+        assert frame.mode == "idle", frame.mode
+        pending[0]()
+        assert not played, "断られた後に前の音が鳴りました"
+    finally:
+        wx.CallLater = real
+        del frame.play_at
+        frame.__dict__.pop("hrir_supports_elevation", None)
+        _reset(frame)
+    return "別のモードへ移ったときも、上下の測定が無くて断られたときも鳴らない"
+
+
+@test("review2: 耳介の選定中の HRTF の変更は終わってから効き、案内の間の変更はすぐ効く")
+def t_review2_hrtf_during_calib(frame: MainFrame) -> str:
+    from demo.quiz import CalibrationSession, Difficulty
+
+    assert frame.ensure_player()
+    engine = frame.player.engine
+    paths = [p for _, p in frame.hrtf_choices if p is not None]
+    assert len(paths) >= 3, "実測 HRTF が足りません"
+    a, b, c = paths[:3]
+    saved = frame.cmb_hrtf.GetSelection()
+    real = wx.CallLater
+    wx.CallLater = lambda ms, fn, *a_, **k: None
+
+    def select(path) -> None:
+        index = next(i for i, (_, p) in enumerate(frame.hrtf_choices)
+                     if p == path)
+        frame.cmb_hrtf.SetSelection(index)
+        frame.on_hrtf_changed(wx.CommandEvent())
+
+    def session() -> CalibrationSession:
+        return CalibrationSession([(str(b), "B"), (str(a), "A")],
+                                  difficulty=Difficulty.EIGHT,
+                                  trials_per_candidate=8, seed=3)
+
+    try:
+        select(a)
+        frame._begin("calib", session(), "x")
+        frame.play_current()               # 候補の耳介 B を読み込む
+        assert engine.hrir is frame.load_hrir(b)
+        select(c)
+        assert engine.hrir is frame.load_hrir(b), "選定の途中で差し替わりました"
+        frame._restore_selected_hrir()
+        assert engine.hrir is frame.load_hrir(c), "終わっても設定欄へ戻りません"
+        _reset(frame)                      # 前半の選定を終わらせる
+
+        select(a)
+        frame._begin("calib", session(), "x")
+        select(c)                          # 候補を読み込む前（案内の間）
+        frame.start_quiz()
+        assert engine.hrir is frame.load_hrir(c), \
+            "案内の間に変えた HRTF が別のモードで使われません"
+    finally:
+        wx.CallLater = real
+        frame._active_tag = None
+        frame.cmb_hrtf.SetSelection(saved)
+        engine.set_hrir(frame.load_hrir(frame.current_hrtf()[1]))
+        _reset(frame)
+    return "候補を読み込んでいる間だけ待ち、それ以外はすぐ切り替える"
+
+
+@test("review2: 試聴のタイマーは作り直さず使い回す")
+def t_review2_orbit_timer(frame: MainFrame) -> str:
+    assert frame.ensure_player()
+    seen = []
+    try:
+        for _ in range(3):
+            frame.toggle_orbit()
+            seen.append(frame._orbit_timer)
+            frame.toggle_orbit()
+        assert seen[0] is not None and all(t is seen[0] for t in seen), seen
+        assert frame._orbit_timer is None
+    finally:
+        _reset(frame)
+    return "3回始めても同じタイマー"
+
+
 TESTS = [t_names, t_label_order, t_no_letter_keys, t_arrows_turn,
          t_updown_passthrough,
          t_wobble_choices, t_settings_text, t_numpad_geometry,
@@ -1633,6 +1772,8 @@ TESTS = [t_names, t_label_order, t_no_letter_keys, t_arrows_turn,
          t_user_reverb, t_furnish_setting, t_editor_contents,
          t_review_rotation_fade, t_review_reverb_kept,
          t_review_preview_extras, t_review_editor_furnish_room_only,
+         t_review2_f4_wait, t_review2_delayed_cancel,
+         t_review2_hrtf_during_calib, t_review2_orbit_timer,
          t_english_ui, t_manual_current]
 
 

@@ -368,7 +368,9 @@ class SpatialEngine:
             slot = self._slots.get(handle)
             if slot is None:
                 return
-            if fade_ms > 0.0:
+            # 止めている音と、全体を止めている間は描画されず、フェードが
+            # 進まない（枠が返らない、再開後に鳴る）。その場で外す
+            if fade_ms > 0.0 and slot.active and not self._paused:
                 slot._fade_step = max(
                     1e-6, self._block_seconds * 1000.0 / float(fade_ms))
                 return
@@ -772,6 +774,9 @@ class SpatialEngine:
                     continue
                 slot = self._slots[handle]
                 if not slot.active:
+                    if slot._fade_step:
+                        # フェード中に止められた音。描画されないので外す
+                        finished_fades.append(handle)
                     continue
                 fade = slot._fade_gain
                 if slot._fade_step:
@@ -877,6 +882,16 @@ class SpatialEngine:
                 # 大きな雑音になる。回数は nonfinite_blocks で分かる
                 out[:] = 0.0
                 self.nonfinite_blocks += 1
+                # 壊れた値が残ったままだと、次のブロックも壊れて無音が続く。
+                # 行ごとのフィルタ・畳み込みの尾・反射の状態も消す
+                self._lp_zi[:] = 0.0
+                self._tilt_zi[:] = 0.0
+                self._conv.reset()
+                for s in self._slots.values():
+                    s._flat_zi = None
+                for early in (self._early, self._old_early):
+                    if early is not None:
+                        early.reset()
                 if self.reverb is not None and hasattr(self.reverb, "reset"):
                     self.reverb.reset()
                 self._tails = []
@@ -959,15 +974,18 @@ class SpatialEngine:
             self._old_early_gain = g1
             parts.append(self._early_rows(self._old_early, dry, listener,
                                           self.max_sources + MAX_PATHS,
-                                          g0, g1))
+                                          g0, g1, hold=True))
             if g1 <= 0.0:
                 self._old_early = None
         return np.concatenate(parts)
 
     def _early_rows(self, early: EarlyReflections, dry: np.ndarray,
                     listener: Listener, first_row: int, g0: float,
-                    g1: float) -> np.ndarray:
-        signals, dirs, dists = early.process(dry, listener.position)
+                    g1: float, hold: bool = False) -> np.ndarray:
+        # hold: 消えていく前の空間の反射は、聞き手が壁を抜けて外に出ても、
+        # 最後に中にいた位置で続ける（0本にすると、その場で切れてプツッと鳴る）
+        signals, dirs, dists = early.process(dry, listener.position,
+                                             hold_outside=hold)
         if not len(signals):
             return np.zeros(0, dtype=np.intp)
         if g0 != 1.0 or g1 != 1.0:

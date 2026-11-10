@@ -6,8 +6,8 @@ licensed (numpy, scipy, and optionally sofar / pyroomacoustics /
 sounddevice, all MIT or BSD), so it can be used in software that is sold
 without any source-disclosure obligation.  The code was written with
 Claude (an AI model by Anthropic); see "How this was made" in README.md.
-It exists because the usual OpenAL bindings (PyOpenAL, cyal, synthizer)
-have no CPython 3.14 wheels.
+It exists to offer binaural audio that does not depend on OpenAL, under the
+MIT License, with a choice of measured HRTFs.
 
 Two levels of API:
 
@@ -32,7 +32,7 @@ the program to choose one.
 """
 from __future__ import annotations
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 from .acoustics import (FACE_LABELS, FACE_MATERIALS, FURNISH_LEVELS,
                         FURNISHINGS, SPACE_KINDS, SPACE_PRESETS, Furnishing,

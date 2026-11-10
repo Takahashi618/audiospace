@@ -602,7 +602,12 @@ class MainFrame(wx.Frame):
         # 鳴らす。「どの段か」を当てる絶対判断を、「基準より上か下か」の
         # 比較に変える。初回の4択では誤りの9割が隣の段とのずれだった。
         self.reference_enabled = True
+        # 試聴（F2）の動かすタイマー。1つを使い回す（始めるたびに作って
+        # つなぐと、つないだ処理が増え続ける）。動いている間だけ _orbit_timer
+        # がそれを指す
         self._orbit_timer: wx.Timer | None = None
+        self._orbit_obj = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.on_orbit, self._orbit_obj)
         # 回る向きの聴き取り: 音を動かすタイマー（1つを使い回す。鳴らすたびに
         # 作ってつなぐと、つないだ処理が増え続ける）と、いま回している問題
         self._rot_timer = wx.Timer(self)
@@ -629,6 +634,8 @@ class MainFrame(wx.Frame):
         # 同じ残響を毎回作り直すと、鳴っている響きがそのたびに途切れる
         self._applied_room: object = "unset"
         self._begin_gen = 0
+        # 答えた直後（次の問題が鳴るまで）の印。この間の F4 は受け付けない
+        self._pending_next = False
         self.records = RecordStore()
         # 上下用の耳介の通算成績。前後用とは別のファイルに積み上げる
         # （前後に合う耳介と上下に合う耳介は同じとは限らない）
@@ -861,7 +868,9 @@ class MainFrame(wx.Frame):
         self.txt_log.SetFocus()
         # 自分で作った空間と残響のファイルが読めなかったときは、説明の前に書く
         # （黙って空にすると、作ったものが消えたように見える）
-        warning = self.user_presets.load_error
+        warning = "\n".join(w for w in (self.user_presets.load_error,
+                                        self.records.load_error,
+                                        self.records_elev.load_error) if w)
         self.txt_log.SetValue((warning + "\n\n" if warning else "") + HELP_TEXT)
 
     def log(self, text: str, speak: bool = True) -> None:
@@ -1167,6 +1176,16 @@ class MainFrame(wx.Frame):
                                "次に音を鳴らすときに読み込みます。",
                                f"Switched to {label}. It will load when the "
                                "next sound plays."))
+        elif self._active_tag is not None:
+            # 耳介の選定で候補の耳介を読み込んでいる間。ここで差し替えると、
+            # 残りの問題が選んだ HRTF で鳴るのに、成績は候補の耳介のものに
+            # なる。終わったときに設定欄の HRTF へ戻す。まだ候補を読み込む
+            # 前（案内の間）は、下の通常の切り替えを通す（ここで止めると、
+            # そのまま別のモードへ移ったとき、戻す処理が働かず食い違う）
+            self.speech.say(tr(f"{label} を選びました。耳介の選定中なので、"
+                               "選定が終わってから使います。",
+                               f"Chose {label}. A pinna choice is running, "
+                               "so it will be used after it ends."))
         else:
             try:
                 self.player.engine.set_hrir(self.load_hrir(path))
@@ -1753,11 +1772,11 @@ class MainFrame(wx.Frame):
         self._restore_selected_hrir()
         self.apply_settings()
         self.session = None
+        self._begin_gen += 1        # 直前のモードの遅延出題を無効にする
         self.mode = "orbit"
         self._orbit_angle = 0.0
         self.play_at(0.0, loop=True)
-        self._orbit_timer = wx.Timer(self)
-        self.Bind(wx.EVT_TIMER, self.on_orbit, self._orbit_timer)
+        self._orbit_timer = self._orbit_obj
         self._orbit_timer.Start(50)
         self.log(tr("試聴を開始しました。音が正面から左回りに一周します。"
                     "もう一度 F2 で停止します。",
@@ -1815,8 +1834,15 @@ class MainFrame(wx.Frame):
         # 開始をすぐ連打で切り替えたとき、前のモードの遅延出題が新しい
         # セッションを鳴らさないよう、世代番号で無効化する
         self._begin_gen += 1
+        self._pending_next = False
         gen = self._begin_gen
         wx.CallLater(2800, lambda: self._play_if_current(gen))
+
+    def _later(self, ms: int, fn) -> None:
+        """遅らせて動かす。待つ間に別のモードが始まっていたら動かさない
+        （前のモードの音や出題が、新しいモードにかぶらないように）。"""
+        gen = self._begin_gen
+        wx.CallLater(ms, lambda: fn() if gen == self._begin_gen else None)
 
     def _play_if_current(self, gen: int) -> None:
         if gen == self._begin_gen:
@@ -1995,6 +2021,7 @@ class MainFrame(wx.Frame):
         self.stop_sound()
         self.session = None
         self.mode = "idle"
+        self._begin_gen += 1        # 直前のモードの遅延出題を無効にする
         self.log(tr(f"{self.current_hrtf()[0]}には上下の測定がないため、"
                     "上下の聴き取りはできません。"
                     f"HRTF で実測 Viking の耳介を選んでから、もう一度 {key_name} を"
@@ -2152,6 +2179,7 @@ class MainFrame(wx.Frame):
     def play_current(self) -> None:
         if self.session is None or self.session.finished:
             return
+        self._pending_next = False     # 次の問題を鳴らす（F4 も受け付ける）
         trial = self.session.current()
         if isinstance(self.session, (CalibrationSession,
                                      ElevationCalibrationSession)):
@@ -2194,11 +2222,12 @@ class MainFrame(wx.Frame):
                                  "try again, or Escape to quit."))
             return
         self._active_tag = session.current_tag
-        wx.CallLater(1500, self._play_after_switch)
+        self._later(1500, self._play_after_switch)
 
     def _play_after_switch(self) -> None:
         if self.session is None or self.session.finished:
             return
+        self._pending_next = False
         trial = self.session.current()
         self.SetStatusText(self._progress_text())
         self._play_trial(trial)
@@ -2225,6 +2254,10 @@ class MainFrame(wx.Frame):
                                "quiz, F7 training, Shift+F3 the up/down "
                                "test."))
             return
+        if self._pending_next:
+            # 答えた直後の読み上げの間。次の問題はもうすぐ鳴る（ここで鳴らすと
+            # 読み上げにかぶり、その問題の聞き直しが1回数えられる）
+            return
         self.session.note_replay()
         # play_at を直接呼ばず play_current を通す。耳介の切替に失敗した
         # 直後なら切替からやり直し、通常時はいまの問題を鳴らし直す。
@@ -2236,6 +2269,7 @@ class MainFrame(wx.Frame):
             return
         # 次の出題音が鳴るまで、続けてのキー入力は受け付けない
         self._accepting = False
+        self._pending_next = True
         self._stop_repeat()
         trial = session.answer(azimuth_deg, listener_yaw_deg=self._yaw)
 
@@ -2244,11 +2278,11 @@ class MainFrame(wx.Frame):
             self.lst_result.Set(session.detail_lines()[-12:])
             if not trial.correct:
                 # 正解方向をもう一度鳴らして違いを聞かせる
-                wx.CallLater(600, lambda: self.play_at(trial.truth_deg,
-                                                       trial.distance_m))
-                wx.CallLater(2600, self._after_answer)
+                self._later(600, lambda: self.play_at(trial.truth_deg,
+                                                      trial.distance_m))
+                self._later(2600, self._after_answer)
             else:
-                wx.CallLater(900, self._after_answer)
+                self._later(900, self._after_answer)
             return
 
         if trial.front_back:
@@ -2258,13 +2292,14 @@ class MainFrame(wx.Frame):
         self.speech.say(answer_text(trial.index + 1, trial.correct, extra,
                                     direction_name(trial.truth_deg)))
         self.lst_result.Set(session.detail_lines()[-12:])
-        wx.CallLater(1200, self._after_answer)
+        self._later(1200, self._after_answer)
 
     def submit_elevation(self, elevation_deg: float) -> None:
         session = self.session
         if not isinstance(session, ElevationSession):
             return
         self._accepting = False
+        self._pending_next = True
         self._stop_repeat()
         trial = session.answer_elevation(elevation_deg)
         if trial.up_down:
@@ -2274,13 +2309,14 @@ class MainFrame(wx.Frame):
         self.speech.say(answer_text(trial.index + 1, trial.correct, extra,
                                     elevation_name(trial.truth_el)))
         self.lst_result.Set(session.detail_lines()[-12:])
-        wx.CallLater(1200, self._after_answer)
+        self._later(1200, self._after_answer)
 
     def submit_rotation(self, motion: str) -> None:
         session = self.session
         if not isinstance(session, RotationSession):
             return
         self._accepting = False
+        self._pending_next = True
         self._stop_repeat()
         # 回っている途中で答えたら、音は切らずに短く消す
         self._fade_out_rotation()
@@ -2294,9 +2330,10 @@ class MainFrame(wx.Frame):
         self.speech.say(answer_text(trial.index + 1, trial.correct, extra,
                                     rotation_name(trial.truth_motion)))
         self.lst_result.Set(session.detail_lines()[-12:])
-        wx.CallLater(1200, self._after_answer)
+        self._later(1200, self._after_answer)
 
     def _after_answer(self) -> None:
+        self._pending_next = False
         session = self.session
         if session is None:
             return

@@ -15,8 +15,7 @@
 
 窓が使うのは、親（MainFrame）の次のもの: `user_presets`（保存先）、
 `speech`、`preview_space(spec)`、`preview_reverb(spec)`、`end_preview()`、
-`on_user_presets_changed(kind, name)`、`current_space_spec()`、
-`current_reverb_spec()`。
+`on_user_presets_changed(kind, name)`。
 """
 from __future__ import annotations
 

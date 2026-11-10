@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-os.environ.setdefault("AUDIOSPACE_SILENT", "1")
+os.environ["AUDIOSPACE_SILENT"] = "1"
 # 表示の言語を日本語に固定する（テストが期待する文は日本語）
 os.environ["AUDIOSPACE_LANG"] = "ja"
 ROOT = Path(__file__).resolve().parents[1]

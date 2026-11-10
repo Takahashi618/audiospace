@@ -21,6 +21,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -40,6 +41,16 @@ from .sources import (BufferSource, PushSource, Source, StereoBufferSource,
                       load_flat, load_mono, resampled_by)
 
 
+def _mark_exclusive(choice: DeviceChoice, exclusive: bool) -> DeviceChoice:
+    """排他で開くときは、読み上げ（describe）も排他モードにする。
+
+    実際に排他になるのは WASAPI だけ（device.open_output_stream と同じ条件）。
+    """
+    if exclusive and "wasapi" in choice.host_api.lower():
+        return replace(choice, exclusive=True)
+    return choice
+
+
 class SpatialPlayer:
     """Real-time binaural playback with a simple call surface."""
 
@@ -47,7 +58,9 @@ class SpatialPlayer:
                  choice: DeviceChoice | None = None,
                  exclusive: bool = False) -> None:
         self.engine = engine
-        self.choice = choice
+        # どの作り方でも、読み上げ（describe）を実際のモードに合わせる
+        self.choice = (_mark_exclusive(choice, exclusive)
+                       if choice is not None else None)
         self.exclusive = exclusive
         self.silent = choice is None
         self._stream = None
@@ -266,7 +279,8 @@ class SpatialPlayer:
         except Exception:                     # noqa: BLE001 -- enumeration
             pass                              # below will tell the truth
         try:
-            choice = choose_output(prefer_host_api, device)
+            choice = _mark_exclusive(choose_output(prefer_host_api, device),
+                                     self.exclusive)
         except Exception:
             # no usable device at all: stay in the lost state so
             # check_device()/status() keep saying so instead of going quiet

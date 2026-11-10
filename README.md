@@ -9,8 +9,8 @@
 MIT か BSD）なので、**ソース開示義務なしに販売できる**ソフトウェアに
 組み込める。既定 HRTF だけは CC BY 4.0 で、表示が必要（`ATTRIBUTION.md`）。
 
-OpenAL 系の Python バインディング（PyOpenAL / cyal / synthizer）が
-CPython 3.14 向け wheel を出していないため、その代替として作った。
+OpenAL に頼らず、ライセンスが MIT で、HRTF を耳に合わせて選べる音響の部品が
+ほしくて作った（OpenAL Soft は LGPL で、HRTF の種類も少ない）。
 
 ## 表示の言語
 
@@ -39,7 +39,7 @@ audiospace のコードは、AI（Anthropic の Claude）が書きました。�
 - 動作の確認と、直すか直さないかの判断
 - 公開、問い合わせへの対応、保守
 
-コードは自動テスト（228件）と作者の実機での確認で検証しています。それでも、
+コードは自動テスト（241件）と作者の実機での確認で検証しています。それでも、
 人が書いたコードと同じく、誤りが残っている可能性があります。無保証です。
 
 日本の文化庁や米国の著作権局の考え方では、AI が書いた部分には著作権が
@@ -61,7 +61,7 @@ The author did not write the code. The author's part was:
 - Checking the behaviour and deciding what to fix.
 - Publishing, answering questions and maintenance.
 
-The code is checked by 228 automated tests and by the author on real
+The code is checked by 241 automated tests and by the author on real
 hardware, but like any code it may still contain mistakes. It comes without
 warranty.
 
@@ -89,8 +89,8 @@ under the MIT License.
 wheel を入れる場合（ファイル名は実物に合わせる）:
 
 ```
-python -m pip install audiospace-0.7.0-py3-none-any.whl
-python -m pip install "audiospace-0.7.0-py3-none-any.whl[playback]"
+python -m pip install audiospace-0.7.1-py3-none-any.whl
+python -m pip install "audiospace-0.7.1-py3-none-any.whl[playback]"
 ```
 
 2行目は実機再生も使う場合。wheel だけの環境では焼き込み済みの残響 IR が
@@ -315,7 +315,6 @@ player.set_space(None)                                          # 外す
 - `set_space` は残響を置き換える（`set_reverb` / `use_room_ir` の設定は外れる）
 - 処理時間（性能コア、128音源）: hall の IR 残響 2.2ms に対し、空間 2.9ms。
   効率コアでは 128音源＋空間の99%値が予算すれすれ（10.2〜10.5ms）。
-  `tools/bench_space_report.txt`
 - 帯域ごとの減衰は低域・高域の2つのシェルフで近似するので、残響時間は目標と
   2〜3割ずれることがある（コンクリートの部屋の 4kHz で 1.35秒の目標に 1.8秒）
 
@@ -333,7 +332,7 @@ print(player.engine.late_status)     # 「精密版の残響」など、読み�
 大きさは速い版と同じエネルギーにそろえてあるので、切り替えても音量は変わらない。
 
 速い版（Eyring の式）との違いが出るのは、吸音が偏っている部屋。じゅうたんの
-床と吸音天井で壁は反射する部屋では、速い版の 0.27秒に対し精密版は 0.72秒
+床と吸音天井で壁は反射する部屋では、速い版の 0.27秒に対し精密版は 0.66秒
 （壁の間を音が往復し続けるのを、精密な計算だけが表せる）。
 
 - 用意した閉じた部屋7種は焼き込み済み（`assets/space_ir/`、計8.4MB）ですぐ使える
@@ -692,7 +691,7 @@ audiospace のフォルダで次を実行する:
 python -X utf8 tests\run_all.py
 ```
 
-これで5スイート計228件がまとめて走る（無音設定は内部で行う。表示の言語は
+これで5スイート計241件がまとめて走る（無音設定は内部で行う。表示の言語は
 日本語に固定する）。
 個別に走らせる場合:
 

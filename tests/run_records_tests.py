@@ -16,7 +16,7 @@ import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
-os.environ.setdefault("AUDIOSPACE_SILENT", "1")
+os.environ["AUDIOSPACE_SILENT"] = "1"
 # 表示の言語を日本語に固定する（テストが期待する文は日本語）
 os.environ["AUDIOSPACE_LANG"] = "ja"
 ROOT = Path(__file__).resolve().parents[1]
@@ -313,7 +313,7 @@ def t_easy_delta_excluded() -> str:
 
 @test("旧形式（絶対パスのタグ）を読み込み時にファイル名へ移行する")
 def t_path_migration() -> str:
-    """以前はタグが SOFA の絶対パスだったため、フォルダ移動や Mac 連携で
+    """以前はタグが SOFA の絶対パスだったため、フォルダ移動や別の PC との行き来で
     通算成績が全部「別の耳介」になった。読み込み時にファイル名へ正規化し、
     旧新両形式が並んでいたら1つに畳む。"""
     import json
@@ -461,12 +461,31 @@ def t_review_presets_malformed() -> str:
     return store.load_error
 
 
+@test("通算成績のファイルが壊れていたら .broken に残して知らせ、形が違っても起動する")
+def t_review2_records_broken() -> str:
+    for text in ("[]", '{"records": [', '{"records": 5}'):
+        folder = Path(tempfile.mkdtemp())
+        path = folder / "records.json"
+        path.write_text(text, encoding="utf-8")
+        store = RecordStore(path)                 # 例外を出さない
+        assert store.records == {} and store.load_error, text
+        assert not path.exists(), "元のファイルが残っていて、上書きされうる"
+        assert (folder / "records.json.broken").read_text(
+            encoding="utf-8") == text, "退避したファイルが元と違う"
+    # 保存は一時ファイル経由（途中の .tmp が残らない）
+    store.update([score("A", 8)], anchor_tag="A", n_directions=8)
+    store.save()
+    assert not list(folder.glob("*.tmp")) and RecordStore(path).records
+    return "3通りの壊れ方で、退避して知らせ、保存し直せた"
+
+
 TESTS = [t_skill_drift, t_easy_excluded, t_easy_delta_excluded,
          t_anchor_zero, t_accumulate, t_min_trials,
          t_lineup_anchor, t_lineup_first, t_lineup_exhausted,
          t_lineup_too_small, t_roundtrip, t_corrupt, t_close_call,
          t_progress, t_fb_rate, t_path_migration, t_path_candidates,
-         t_user_presets, t_user_presets_broken, t_review_presets_malformed]
+         t_user_presets, t_user_presets_broken, t_review_presets_malformed,
+         t_review2_records_broken]
 
 
 def main() -> int:

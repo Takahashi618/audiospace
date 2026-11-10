@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>audiospace 0.7.0 マニュアル</title>
+<title>audiospace 0.7.1 マニュアル</title>
 <style>
 :root { color-scheme: light dark; }
 body {
@@ -25,7 +25,7 @@ pre { border: 1px solid #888; padding: 0.5em; overflow-x: auto; }
 </style>
 </head>
 <body>
-<h1>audiospace <span class="version">0.7.0</span> マニュアル</h1>
+<h1>audiospace <span class="version">0.7.1</span> マニュアル</h1>
 
 <p>作者: Takahashi。この文書は2026年10月16日に作りました。</p>
 <p>audiospace は、視覚障害者向けのゲームやツールのための、ヘッドホンで聞く3D音響の部品（ライブラリ）です。音の聞こえる方向や響きを確かめる「定位確認ツール」が付いています。どちらもキーボードとスクリーンリーダー（PC-Talker・NVDA）だけで使えます。</p>
@@ -514,8 +514,8 @@ pre { border: 1px solid #888; padding: 0.5em; overflow-x: auto; }
 <h3>入れ方</h3>
 <p>このフォルダで次を実行します。実機で音を出すには playback を付けます。</p>
 <pre><code>python -m pip install -e ".[playback]"</code></pre>
-<p>配布の wheel（audiospace-<span class="version">0.7.0</span>-py3-none-any.whl）を使う場合は、ファイルのあるフォルダで次を実行します。wheel には実測の耳介20種類のデータは入らず、既定の耳介（耳介E、水平面だけ）が入ります。</p>
-<pre><code>python -m pip install "audiospace-<span class="version">0.7.0</span>-py3-none-any.whl[playback]"</code></pre>
+<p>配布の wheel（audiospace-<span class="version">0.7.1</span>-py3-none-any.whl）を使う場合は、ファイルのあるフォルダで次を実行します。wheel には実測の耳介20種類のデータは入らず、既定の耳介（耳介E、水平面だけ）が入ります。</p>
+<pre><code>python -m pip install "audiospace-<span class="version">0.7.1</span>-py3-none-any.whl[playback]"</code></pre>
 
 <h3>座標と向き</h3>
 <p>座標はメートルで、x が東、y が北、z が上です。聞き手の向き（yaw_deg）は北から反時計回りの角度で、0なら北を向き、90なら西（左）を向きます。</p>
