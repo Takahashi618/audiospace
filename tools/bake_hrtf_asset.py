@@ -2,13 +2,18 @@
 
 SOFA は 1 ファイル 2.7MB で、読み込みに sofar と netCDF が要る。
 水平面に絞って .npz にすれば 200KB 台になり、numpy だけで読めるので、
-PyInstaller で固めるゲームに同梱しやすい。
+PyInstaller で固めるゲームに同梱しやすい。全天球のまま .npz にすると
+約1.4MB で、上下も鳴らせる（default_hrir(full_sphere=True)）。
 
-    python -X utf8 tools\\bake_hrtf_asset.py            # 既定(耳介E)
-    python -X utf8 tools\\bake_hrtf_asset.py --pinna F
-    python -X utf8 tools\\bake_hrtf_asset.py --pinna F --keep-elevation
+    python -X utf8 tools\\bake_hrtf_asset.py                   # 水平面（耳介E）
+    python -X utf8 tools\\bake_hrtf_asset.py --keep-elevation  # 全天球（耳介E）
+    python -X utf8 tools\\bake_hrtf_asset.py --pinna F --out 別の場所.npz
 
-出力: audiospace/data/default_horizontal.npz
+出力: 水平面は audiospace/data/default_horizontal.npz、
+全天球（--keep-elevation）は audiospace/data/default_sphere.npz
+
+表示義務の文面（npz の attribution）の「改変」は、実際にした変換だけを書く
+（元のレートと受信点の数は SOFA から読む）。
 """
 from __future__ import annotations
 
@@ -24,7 +29,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from audiospace import HrirSet  # noqa: E402
-from audiospace.defaults import ASSET_DIR, DEFAULT_ASSET, DEFAULT_PINNA  # noqa: E402
+from audiospace.defaults import (ASSET_DIR, DEFAULT_ASSET,  # noqa: E402
+                                 DEFAULT_PINNA, DEFAULT_SPHERE_ASSET)
 
 VIKING_DIR = ASSET_DIR / "viking"
 
@@ -45,9 +51,21 @@ ATTRIBUTION_JA = (
     "https://doi.org/10.5281/zenodo.4160401）の HRTF データを含みます。"
     "元は The Viking HRTF dataset（Spagnol, Purkhus, Bjornsson, "
     "Unnthorsson 作、SMC 2019）です。CC BY 4.0"
-    "（https://creativecommons.org/licenses/by/4.0/）のもとで使用し、"
-    "{mod_ja}改変しています。"
+    "（https://creativecommons.org/licenses/by/4.0/）のもとで使用しています。"
+    "改変: {mod_ja}。"
 )
+
+
+def sofa_facts(path: Path) -> tuple[int, int]:
+    """SOFA の元のサンプルレートと受信点の数。"""
+    import contextlib
+    import io
+
+    import sofar
+    with contextlib.redirect_stdout(io.StringIO()):
+        sofa = sofar.read_sofa(str(path))
+    return (int(np.ravel(sofa.Data_SamplingRate)[0]),
+            int(np.asarray(sofa.Data_IR).shape[1]))
 
 
 def main() -> int:
@@ -60,8 +78,13 @@ def main() -> int:
     parser.add_argument("--decimate", type=float, default=0.0,
                         help="方位をこの刻み（度）に間引く。0で間引かない")
     parser.add_argument("--rate", type=int, default=48000)
-    parser.add_argument("--out", default=str(DEFAULT_ASSET))
+    parser.add_argument("--out", default=None,
+                        help="出力先。既定は水平面なら default_horizontal.npz、"
+                             "--keep-elevation なら default_sphere.npz")
     args = parser.parse_args()
+    if args.out is None:
+        args.out = str(DEFAULT_SPHERE_ASSET if args.keep_elevation
+                       else DEFAULT_ASSET)
 
     source = VIKING_DIR / f"subj_{args.pinna}.sofa"
     if not source.exists():
@@ -82,14 +105,28 @@ def main() -> int:
         hrir = hrir.decimated(args.decimate)
         print(f"{args.decimate:g}度刻みに間引く: {hrir.n_directions}方向")
 
-    mod_en = ["resampled", "truncated to two receivers"]
-    mod_ja = ["リサンプリング", "受信点を2つに削減"]
+    native_rate, receivers = sofa_facts(source)
+    mod_en: list[str] = []
+    mod_ja: list[str] = []
+    if native_rate != args.rate:
+        mod_en.append(f"resampled to {args.rate} Hz")
+        mod_ja.append(f"{args.rate}Hz にリサンプリング")
+    if receivers > 2:
+        mod_en.append("truncated to two receivers")
+        mod_ja.append("受信点を2つに削減")
     if not args.keep_elevation:
         mod_en.append("restricted to the horizontal plane")
         mod_ja.append("水平面のみに限定")
     if args.decimate > 0:
         mod_en.append(f"azimuth decimated to {args.decimate:g} deg")
         mod_ja.append(f"方位を{args.decimate:g}度刻みに間引き")
+    if mod_en:
+        mod_en.append("converted from SOFA to the NumPy npz format")
+        mod_ja.append("SOFA から NumPy の npz 形式に変換")
+    else:
+        mod_en.append("converted from SOFA to the NumPy npz format "
+                      "(the measured values are unchanged)")
+        mod_ja.append("SOFA から NumPy の npz 形式に変換（測定値は変えていない）")
 
     out = Path(args.out)
     path = hrir.save_npz(
@@ -101,12 +138,9 @@ def main() -> int:
         license_url="https://creativecommons.org/licenses/by/4.0/",
         doi="https://doi.org/10.5281/zenodo.4160401",
         attribution=ATTRIBUTION_EN.format(mod_en=", ".join(mod_en)),
-        attribution_ja=ATTRIBUTION_JA.format(mod_ja="・".join(mod_ja) + "して"),
-        modifications=("resampled; receivers truncated to 2; "
-                       + ("full sphere retained" if args.keep_elevation
-                          else "restricted to the horizontal plane")
-                       + (f"; azimuth decimated to {args.decimate:g} deg"
-                          if args.decimate > 0 else "")),
+        attribution_ja=ATTRIBUTION_JA.format(mod_ja="・".join(mod_ja)),
+        modifications="; ".join(mod_en),
+        full_sphere=bool(args.keep_elevation),
         selection_note=("聴取テスト（12方向・首振りあり）で選定。"
                         "上位3種は同着だったが、この耳介のみ"
                         "判別可能な難易度72問で前後の取り違えゼロ。"),

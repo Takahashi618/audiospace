@@ -16,6 +16,13 @@ HRTF の良し悪しは聞き手との相性で決まり、21種類を毎回試�
 
 同着だったので、E が万人にとって最良という主張ではない。合わない場合は
 `demo/localization_app.py` の耳介選定（F8）で選び直せる。
+
+水平面と全天球
+--------------
+既定は水平面だけ（216方向、約205KB）。2D のゲームは上下を使わず、表が
+小さいほうが軽い。上下も鳴らしたいときは `full_sphere=True` で、同じ耳介E
+の全天球（1513方向、仰角は下45度から真上まで、約1.4MB）を使う。全天球は
+SOFA の測定値をそのまま npz にしたもので、sofar を入れなくても読める。
 """
 from __future__ import annotations
 
@@ -32,6 +39,8 @@ DEFAULT_PINNA = "E"
 #: 既定アセットはパッケージ内に置く。wheel / PyInstaller にそのまま乗る。
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DEFAULT_ASSET = DATA_DIR / "default_horizontal.npz"
+#: 同じ耳介の全天球（上下も鳴らすとき。default_hrir(full_sphere=True)）
+DEFAULT_SPHERE_ASSET = DATA_DIR / "default_sphere.npz"
 #: 2026-08-26 より前は assets/hrtf/ 直下に置いていた。焼き直し済みの
 #: 古い作業コピーでも動くように、旧位置も探す。
 _LEGACY_ASSET = ASSET_DIR / "default_horizontal.npz"
@@ -46,7 +55,8 @@ def _default_asset_path() -> Path | None:
 
 
 def default_hrir(sample_rate: int = 48000,
-                 fallback_synthetic: bool = True) -> HrirSet:
+                 fallback_synthetic: bool = True,
+                 full_sphere: bool = False) -> HrirSet:
     """既定の HRTF を返す。
 
     焼き込み済みアセット（水平面のみ、約200KB、numpy だけで読める）が
@@ -57,7 +67,19 @@ def default_hrir(sample_rate: int = 48000,
         sample_rate: 出力先に合わせたレート。必要なら変換する。
         fallback_synthetic: アセットが無いとき合成で代替するか。
             False なら FileNotFoundError を送出する。
+        full_sphere: True なら全天球（上下も鳴る、1513方向）。全天球の
+            アセットが無ければ、fallback_synthetic によらず
+            FileNotFoundError（水平面や合成に黙って替えると、上下が
+            鳴らないことに気づけない）。
     """
+    if full_sphere:
+        if not DEFAULT_SPHERE_ASSET.exists():
+            raise FileNotFoundError(
+                tr(f"{DEFAULT_SPHERE_ASSET} がありません。"
+                   "tools/bake_hrtf_asset.py --keep-elevation で作成してください",
+                   f"{DEFAULT_SPHERE_ASSET} is missing. Create it with "
+                   "tools/bake_hrtf_asset.py --keep-elevation"))
+        return HrirSet.load_npz(DEFAULT_SPHERE_ASSET).resampled(sample_rate)
     path = _default_asset_path()
     if path is not None:
         return HrirSet.load_npz(path).resampled(sample_rate)
@@ -75,12 +97,16 @@ def default_is_measured() -> bool:
     return _default_asset_path() is not None
 
 
-def attribution() -> str:
-    """既定アセットを配布物に含める際に表示する文面。
+def attribution(full_sphere: bool = False) -> str:
+    """既定アセットを配布物に含める際に表示する文面（英語）。
 
     Viking は CC BY 4.0 なので商用利用できるが、表示が必須。
+    `full_sphere=True` は全天球のアセットの文面（改変の文が違う）。
     """
-    path = _default_asset_path()
+    if full_sphere:
+        path = DEFAULT_SPHERE_ASSET if DEFAULT_SPHERE_ASSET.exists() else None
+    else:
+        path = _default_asset_path()
     if path is None:
         return ""
     meta = HrirSet.read_npz_meta(path)

@@ -251,6 +251,27 @@ def t_sound_bank(frame: MainFrame) -> str:
     return "\n".join(lines)
 
 
+@test("音の種類はどれも、遅らせずに鳴らしても鳴り始めから聞こえる")
+def t_sound_kinds_audible(frame: MainFrame) -> str:
+    """2026-11-18 まで、遅らせない音は最初の1ブロックを 0 からフェードイン
+    していたので、先頭の1サンプルだけのクリックは無音になっていた。"""
+    from audiospace import HrirSet, SpatialEngine
+    from audiospace.sources import BufferSource
+
+    bank = SoundBank(48000)
+    lines = []
+    for _label, kind in SOUND_KINDS:
+        data = bank.get(kind)
+        engine = SpatialEngine(HrirSet.synthetic(sample_rate=48000),
+                               block=512, max_sources=2)
+        engine.add_source(BufferSource(data), position=(0.0, 4.0, 0.0),
+                          reverb_send=0.0)
+        first = float(np.max(np.abs(engine.render())))
+        assert first > 1e-3, f"{kind} の鳴り始めの1ブロックが無音: {first}"
+        lines.append(f"{kind} {first:.4f}")
+    return "鳴り始めの1ブロックのピーク: " + "、".join(lines)
+
+
 @test("HRTF の選択肢に合成と実測の両方が並ぶ")
 def t_hrtf_choices(frame: MainFrame) -> str:
     items = list_hrtf_choices()
@@ -299,7 +320,7 @@ def t_answer_gate(frame: MainFrame) -> str:
     """回答直後の読み上げ待ちにキーを二度押しすると、まだ鳴っていない
     次の問題に回答してしまう。画面が見えないと気づけない誤操作なので、
     出題音の開始でだけ受付を開く。"""
-    from demo.quiz import Difficulty, QuizSession
+    from audiospace.quiz import Difficulty, QuizSession
 
     frame.session = QuizSession(difficulty=Difficulty.FOUR, n_trials=4,
                                 seed=1)
@@ -325,7 +346,7 @@ def t_answer_gate(frame: MainFrame) -> str:
 
 @test("F11 に首振りの効果測定が割り当てられている")
 def t_ab_mode(frame: MainFrame) -> str:
-    from demo.quiz import ABWobbleSession
+    from audiospace.quiz import ABWobbleSession
 
     assert hasattr(frame, "start_ab"), "start_ab がありません"
     s = ABWobbleSession(n_trials=4, seed=1)
@@ -337,7 +358,7 @@ def t_ab_mode(frame: MainFrame) -> str:
 
 @test("上下の聴き取り: テンキー / 8 5 2 が真上・上・水平・下に対応する")
 def t_elev_keys(frame: MainFrame) -> str:
-    from demo.quiz import ELEVATION_LEVELS
+    from audiospace.quiz import ELEVATION_LEVELS
 
     want = {wx.WXK_NUMPAD_DIVIDE: 90.0, wx.WXK_NUMPAD8: 45.0,
             wx.WXK_NUMPAD5: 0.0, wx.WXK_NUMPAD2: -45.0}
@@ -360,7 +381,7 @@ def t_elev_keys(frame: MainFrame) -> str:
 
 @test("上下の聴き取り: 回答は高さとして受理され、方位キーは無視される")
 def t_elev_answer(frame: MainFrame) -> str:
-    from demo.quiz import ElevationSession
+    from audiospace.quiz import ElevationSession
 
     frame.session = ElevationSession(n_trials=4, seed=1)
     frame._accepting = True
@@ -436,7 +457,7 @@ def _reset(frame: MainFrame) -> None:
 @test("上下の聴き取りは Shift+F3 で始まり、F12 では何も起きない")
 def t_shift_f3(frame: MainFrame) -> str:
     """F12 は PC-Talker のショートカットと衝突したので外した。"""
-    from demo.quiz import ElevationSession, QuizSession
+    from audiospace.quiz import ElevationSession, QuizSession
 
     assert frame.ensure_player(), "無音モードでプレイヤーを開けません"
     try:
@@ -459,7 +480,7 @@ def t_shift_f3(frame: MainFrame) -> str:
 def t_repeat(frame: MainFrame) -> str:
     """読み上げに紛れて出題音を聞き逃しても、待てばまた聞ける。"""
     from demo.localization_app import REPEAT_GAP_S, REPEAT_MIN_S
-    from demo.quiz import ElevationSession
+    from audiospace.quiz import ElevationSession
 
     assert frame.ensure_player(), "無音モードでプレイヤーを開けません"
     assert frame.repeat_enabled, "起動時は繰り返し再生がオンのはずです"
@@ -500,7 +521,7 @@ def t_repeat(frame: MainFrame) -> str:
 
 @test("繰り返し再生: テンキーの0でオンとオフが切り替わる")
 def t_repeat_toggle(frame: MainFrame) -> str:
-    from demo.quiz import QuizSession
+    from audiospace.quiz import QuizSession
 
     assert frame.ensure_player()
     assert frame._azimuth_for_key(wx.WXK_NUMPAD0) is None
@@ -530,7 +551,7 @@ def t_repeat_toggle(frame: MainFrame) -> str:
 
 @test("Ctrl+F3 で正面固定の上下の聴き取りが始まる")
 def t_ctrl_f3(frame: MainFrame) -> str:
-    from demo.quiz import ElevationSession, FrontElevationSession
+    from audiospace.quiz import ElevationSession, FrontElevationSession
 
     assert frame.ensure_player(), "無音モードでプレイヤーを開けません"
     try:
@@ -611,7 +632,7 @@ def t_reference(frame: MainFrame) -> str:
     from audiospace.geometry import Listener, relative_spherical
     from demo.localization_app import (REFERENCE_GAP_S,
                                        REFERENCE_REPEAT_GAP_S)
-    from demo.quiz import ElevationSession, QuizSession
+    from audiospace.quiz import ElevationSession, QuizSession
 
     assert frame.ensure_player()
     assert frame.reference_enabled, "起動時は基準音がオンのはずです"
@@ -677,7 +698,7 @@ def t_reference(frame: MainFrame) -> str:
 @test("聞き比べ: Shift+F2 で始まり、/ 8 5 2 でその高さが正面で鳴る")
 def t_listen(frame: MainFrame) -> str:
     from audiospace.geometry import Listener, relative_spherical
-    from demo.quiz import QuizSession
+    from audiospace.quiz import QuizSession
 
     assert frame.ensure_player()
     try:
@@ -733,7 +754,7 @@ def t_cues_default_off(frame: MainFrame) -> str:
 def t_roll_setting(frame: MainFrame) -> str:
     from audiospace import ROLL_PRESETS
     from audiospace.geometry import Listener, relative_spherical
-    from demo.quiz import position_for
+    from audiospace.quiz import position_for
 
     assert frame.ensure_player()
     engine = frame.player.engine
@@ -764,7 +785,7 @@ def t_floor(frame: MainFrame) -> str:
     from audiospace.geometry import Listener, relative_spherical
     from demo.localization_app import (FLOOR_DEPTH_M,
                                        FLOOR_REFLECTION_GAIN, floor_image)
-    from demo.quiz import FrontElevationSession, position_for
+    from audiospace.quiz import FrontElevationSession, position_for
 
     delays = {}
     for el in (90.0, 45.0, 0.0, -45.0):
@@ -823,10 +844,6 @@ def t_tilt_emphasis(frame: MainFrame) -> str:
         assert abs(engine.elevation_emphasis - 0.35) < 1e-9,             engine.elevation_emphasis
         assert abs(engine.emphasis_db(90.0) - 4.2) < 1e-9
         assert abs(engine.emphasis_db(-45.0) + 2.1) < 1e-9
-        # 鳴らす音は作り変えない（明るさはエンジンが変える）
-        bank = frame.bank
-        assert bank.variant(frame._sound_kind()) is bank.get(
-            frame._sound_kind())
         # 試聴の回る音も同じエンジンを通るので、強調がかかる
         frame.toggle_orbit()
         assert frame.mode == "orbit"
@@ -843,7 +860,7 @@ def t_tilt_emphasis(frame: MainFrame) -> str:
 
 @test("Ctrl+F8 で上下用の耳介の選定が始まり、記録は別ファイルに積む")
 def t_calib_elev(frame: MainFrame) -> str:
-    from demo.quiz import ElevationCalibrationSession
+    from audiospace.quiz import ElevationCalibrationSession
 
     assert frame.ensure_player()
     assert frame.records_elev.path.name == "pinna_records_elev.json"
@@ -874,8 +891,8 @@ def t_restore_hrir(frame: MainFrame) -> str:
     読み上げとログには設定欄の耳介が書かれる（成績の取り違え）。"""
     import tempfile
 
-    from demo.quiz import ElevationCalibrationSession
-    from demo.records import RecordStore
+    from audiospace.quiz import ElevationCalibrationSession
+    from audiospace.records import RecordStore
 
     assert frame.ensure_player()
     engine = frame.player.engine
@@ -949,18 +966,49 @@ def t_listen_f6(frame: MainFrame) -> str:
     return "F6 で終了を読み上げ、その後のテンキー8では鳴らない"
 
 
-@test("作り変えた音の保持は上限までで、元の音はそのまま返す")
-def t_variant_cache_bound(frame: MainFrame) -> str:
-    bank = SoundBank(48000)
-    base = bank.get("noise_bursts")
-    assert bank.variant("noise_bursts") is base
-    cap = SoundBank.VARIANT_CACHE_MAX
-    for k in range(cap + 30):
-        bank.variant("noise_bursts", delay_s=0.001 * (k + 1))
-    assert len(bank._variants) == cap, len(bank._variants)
-    last = bank.variant("noise_bursts", delay_s=0.001 * (cap + 30))
-    assert bank.variant("noise_bursts", delay_s=0.001 * (cap + 30)) is last
-    return f"{cap + 30}種類作っても保持は{cap}個、同じ指定は同じ配列を返す"
+@test("基準音・問題の音・床の反射は、同じ音をエンジンで遅らせ、同じ時刻から数える")
+def t_delay_by_engine(frame: MainFrame) -> str:
+    from demo.localization_app import REFERENCE_GAP_S, floor_image
+    from audiospace.quiz import FrontElevationSession, position_for
+
+    assert frame.ensure_player()
+    engine = frame.player.engine
+    rate = engine.sample_rate
+    try:
+        frame.reference_enabled = True
+        frame.chk_floor.SetValue(True)
+        frame.session = FrontElevationSession(n_trials=4, seed=5)
+        frame.mode = "elev_front"
+        # 無音の再生でも描画は進む。遅れの残りを読む間だけ全体を止める
+        engine.set_paused(True)
+        frame.play_current()
+        trial = frame.session.current()
+        sound = frame.bank.get(frame._sound_kind())
+        lead = len(sound) / frame.bank.sample_rate + REFERENCE_GAP_S
+        _, ref_delay = floor_image(position_for(trial.truth_deg,
+                                                trial.distance_m, 0.0))
+        _, q_delay = floor_image(position_for(trial.truth_deg,
+                                              trial.distance_m,
+                                              trial.truth_el))
+        want = {"基準音": 0.0, "問題の音": lead,
+                "基準音の反射": ref_delay, "問題の音の反射": lead + q_delay}
+        handles = {"基準音": frame._ref_handle, "問題の音": frame._handle,
+                   "基準音の反射": frame._extra_handles[0],
+                   "問題の音の反射": frame._extra_handles[1]}
+        for name, handle in handles.items():
+            slot = engine.get_source(handle)
+            assert not slot._held, f"{name}が together から出ていません"
+            assert slot._wait == int(round(want[name] * rate)), \
+                (name, slot._wait, want[name] * rate)
+            # 無音を足した写しは作らない（同じ長さの元の音を鳴らす）
+            assert slot.source.frames == len(sound), (name, slot.source.frames)
+    finally:
+        engine.set_paused(False)
+        frame.chk_floor.SetValue(False)
+        frame.reference_enabled = True
+        _reset(frame)
+    ms = "、".join(f"{k} {v * 1000:.1f}ms" for k, v in want.items())
+    return f"遅れ: {ms}。どれも元の音のまま、エンジンが遅らせる"
 
 
 @test("空間を選ぶと材質の響きになり、なしに戻すと残響の設定に戻る")
@@ -1107,7 +1155,7 @@ def t_numeric_spins(frame: MainFrame) -> str:
 
 @test("回る向きの聴き取りは Ctrl+F2 で始まり、音が半周して止まる")
 def t_rotation_mode(frame: MainFrame) -> str:
-    from demo.quiz import RotationSession
+    from audiospace.quiz import RotationSession
 
     assert frame.ensure_player(), "無音モードでプレイヤーを開けません"
     try:
@@ -1156,7 +1204,7 @@ def t_rotation_mode(frame: MainFrame) -> str:
 
 @test("回る向き: 上下の測定がない HRTF では水平だけにし、頭上のキーは不正解にしない")
 def t_rotation_flat(frame: MainFrame) -> str:
-    from demo.quiz import RotationSession
+    from audiospace.quiz import RotationSession
 
     assert frame.ensure_player()
     frame.hrir_supports_elevation = lambda: False
@@ -1590,6 +1638,150 @@ def t_review_editor_furnish_room_only(frame: MainFrame) -> str:
     return "道では家具の量を選べず、選んでも数は入らない。部屋では選べる"
 
 
+@test("review3: 耳介を切り替えた直後の待ちの F4 は、鳴らさず聞き直しにも数えない")
+def t_review3_pinna_switch_wait(frame: MainFrame) -> str:
+    from audiospace.quiz import CalibrationSession, Difficulty
+
+    assert frame.ensure_player()
+    paths = [p for _, p in frame.hrtf_choices if p is not None]
+    assert len(paths) >= 2, "実測 HRTF が足りません"
+    captured: list = []
+    real = wx.CallLater
+    wx.CallLater = lambda ms, fn, *a, **k: captured.append(fn)
+    try:
+        frame._begin("calib", CalibrationSession(
+            [(str(paths[0]), "A"), (str(paths[1]), "B")],
+            difficulty=Difficulty.EIGHT, trials_per_candidate=8, seed=4), "x")
+        captured.clear()
+        frame.play_current()               # 耳介を切り替え、1.5秒後に出題する
+        assert len(captured) == 1, captured
+        trial = frame.session.current()
+        frame.replay()                     # 待ちの間の F4
+        assert trial.replays == 0, "聞き直しに数えました"
+        assert frame._handle is None, "案内の間に音が鳴りました"
+        assert not frame._accepting
+        captured.pop()()                   # 1.5秒後の出題
+        assert frame._accepting and frame._handle is not None
+        frame.replay()                     # 出題の後の F4 は効く
+        assert trial.replays == 1, "出題の後の F4 が効きません"
+    finally:
+        wx.CallLater = real
+        frame._pending_next = False
+        frame._restore_selected_hrir()
+        _reset(frame)
+    return "待ちの間は受け付けず、出題の後は聞き直せる"
+
+
+@test("review3: 首振りの効果測定の途中で設定を変えても、問題ごとの首振りが保たれる")
+def t_review3_ab_wobble_kept(frame: MainFrame) -> str:
+    from audiospace import WOBBLE_PRESETS
+
+    assert frame.ensure_player()
+    engine = frame.player.engine
+    saved = (frame.spn_depth.GetValue(), frame.cmb_wobble.GetSelection())
+    real = wx.CallLater
+    wx.CallLater = lambda ms, fn, *a, **k: None
+    try:
+        frame.cmb_wobble.SetSelection(2)   # 標準
+        frame.start_ab()
+        s = frame.session
+        frame.play_current()
+        frame.submit(0.0)                  # 1問目（首振りあり）に答える
+        frame.play_current()               # 2問目（首振りなし）
+        assert not s.wobble_enabled_for(s.current())
+        assert engine.head_wobble.amplitude_deg == 0.0
+        frame.spn_depth.SetValue(40)
+        frame.on_setting_changed(wx.CommandEvent())
+        assert engine.head_wobble.amplitude_deg == 0.0, \
+            "首振りなしの問題に首振りが入りました"
+        frame.end_preview()                # 自作の窓を閉じたときの戻し
+        assert engine.head_wobble.amplitude_deg == 0.0
+        frame.start_quiz()                 # 別のモードでは設定欄の首振り
+        want = WOBBLE_PRESETS["clear"].amplitude_deg
+        assert engine.head_wobble.amplitude_deg == want, \
+            engine.head_wobble.amplitude_deg
+    finally:
+        wx.CallLater = real
+        frame._pending_next = False
+        frame.spn_depth.SetValue(saved[0])
+        frame.cmb_wobble.SetSelection(saved[1])
+        _reset(frame)
+        frame.apply_settings()
+    return "設定を変えても「なし」の問題は振らず、別のモードでは設定欄に戻る"
+
+
+@test("review3: 出力デバイスが失われたら読み上げて、つなぎ直す")
+def t_review3_device_lost(frame: MainFrame) -> str:
+    from audiospace import DeviceRateError
+
+    assert frame.ensure_player()
+    player = frame.player
+    state = {"lost": True, "fail": None, "calls": 0}
+
+    def reopen(*a, **k):
+        state["calls"] += 1
+        if state["fail"] is not None:
+            raise state["fail"]
+        state["lost"] = False
+        return True
+
+    player.check_device = lambda: state["lost"]
+    player.reopen = reopen
+    player.silent = False               # 実機を模す（デバイスは開かない）
+    said = frame.speech.log
+    try:
+        said.clear()
+        frame.check_output()               # つなぎ直せた
+        assert state["calls"] == 1 and "つなぎ直しました" in said[-1], said
+        frame.check_output()               # 戻った後は何もしない
+        assert state["calls"] == 1
+
+        # つなぎ直せないとき: 1回だけ知らせ、間を空けて試し続ける
+        state.update(lost=True, fail=RuntimeError("no device"))
+        said.clear()
+        frame.check_output()
+        assert len(said) == 1 and "失われました" in said[0], said
+        frame.check_output()               # すぐには試し直さない
+        assert state["calls"] == 2, state
+        player._retry_at = 0.0             # 時間がたった
+        frame.check_output()
+        assert state["calls"] == 3 and len(said) == 1, "失敗を何度も読み上げました"
+        state["fail"] = None
+        player._retry_at = 0.0
+        frame.check_output()               # ヘッドホンをつなぎ直した
+        assert "つなぎ直しました" in said[-1], said
+
+        # レートの違う機器に替わったら、音声を作り直す
+        state.update(lost=True, fail=DeviceRateError("44100 Hz"))
+        frame.check_output()
+        assert frame.player is not None and frame.player is not player, \
+            "プレイヤーを作り直していません"
+        assert "作り直しました" in said[-1], said[-1]
+    finally:
+        for name in ("check_device", "reopen"):
+            player.__dict__.pop(name, None)
+        player.silent = True
+        _reset(frame)
+    return said[-1]
+
+
+@test("review3: 英語の表示のとき、保存できない理由は「; 」で区切る")
+def t_review3_user_preset_sep(frame: MainFrame) -> str:
+    import demo.user_presets as up
+
+    real = up.tr
+    up.tr = lambda ja, en: en
+    try:
+        frame.user_presets.put_reverb("", {"rt60": 99})
+        raise AssertionError("おかしな設計図が保存できてしまった")
+    except ValueError as exc:
+        text = str(exc)
+    finally:
+        up.tr = real
+    assert "; " in text and "、" not in text.split("; ")[0], text
+    return text
+
+
 @test("英語の表示: 画面・案内・読み上げ・結果に日本語が残っていない")
 def t_english_ui(frame: MainFrame) -> str:
     # 言語は起動したときに決まるので、英語の画面は別のプロセスで作る
@@ -1619,7 +1811,7 @@ def t_manual_current(frame: MainFrame) -> str:
 
 @test("review2: 答えた直後の F4 は、次の問題を鳴らさず聞き直しにも数えない")
 def t_review2_f4_wait(frame: MainFrame) -> str:
-    from demo.quiz import Difficulty, QuizSession
+    from audiospace.quiz import Difficulty, QuizSession
 
     assert frame.ensure_player()
     real = wx.CallLater
@@ -1645,7 +1837,7 @@ def t_review2_f4_wait(frame: MainFrame) -> str:
 
 @test("review2: 答えた後の遅延の音は、別のモードへ移る・断られると鳴らない")
 def t_review2_delayed_cancel(frame: MainFrame) -> str:
-    from demo.quiz import Difficulty, TrainingSession
+    from audiospace.quiz import Difficulty, TrainingSession
 
     assert frame.ensure_player()
     captured: list = []
@@ -1692,7 +1884,7 @@ def t_review2_delayed_cancel(frame: MainFrame) -> str:
 
 @test("review2: 耳介の選定中の HRTF の変更は終わってから効き、案内の間の変更はすぐ効く")
 def t_review2_hrtf_during_calib(frame: MainFrame) -> str:
-    from demo.quiz import CalibrationSession, Difficulty
+    from audiospace.quiz import CalibrationSession, Difficulty
 
     assert frame.ensure_player()
     engine = frame.player.engine
@@ -1759,14 +1951,14 @@ def t_review2_orbit_timer(frame: MainFrame) -> str:
 TESTS = [t_names, t_label_order, t_no_letter_keys, t_arrows_turn,
          t_updown_passthrough,
          t_wobble_choices, t_settings_text, t_numpad_geometry,
-         t_sound_bank, t_hrtf_choices, t_welcome,
+         t_sound_bank, t_sound_kinds_audible, t_hrtf_choices, t_welcome,
          t_default_pinna, t_answer_gate, t_ab_mode,
          t_elev_keys, t_elev_answer, t_elev_guard,
          t_shift_f3, t_repeat, t_repeat_toggle,
          # 状況表示を書き換えるので、初期表示を見る t_welcome より後に置く
          t_ctrl_f3, t_tilt, t_reference, t_listen,
          t_cues_default_off, t_roll_setting, t_floor, t_tilt_emphasis,
-         t_calib_elev, t_restore_hrir, t_listen_f6, t_variant_cache_bound,
+         t_calib_elev, t_restore_hrir, t_listen_f6, t_delay_by_engine,
          t_space_choice, t_numeric_spins, t_rotation_mode, t_rotation_flat,
          t_help_dialog, t_listen8, t_editor_a11y, t_user_space,
          t_user_reverb, t_furnish_setting, t_editor_contents,
@@ -1774,14 +1966,112 @@ TESTS = [t_names, t_label_order, t_no_letter_keys, t_arrows_turn,
          t_review_preview_extras, t_review_editor_furnish_room_only,
          t_review2_f4_wait, t_review2_delayed_cancel,
          t_review2_hrtf_during_calib, t_review2_orbit_timer,
+         t_review3_pinna_switch_wait, t_review3_ab_wobble_kept,
+         t_review3_device_lost, t_review3_user_preset_sep,
          t_english_ui, t_manual_current]
+
+
+@test("設定欄の選択を保存し、次の起動で当てはめる（上下の手がかりは除く）")
+def t_settings_restore(frame: MainFrame) -> str:
+    import json
+
+    from audiospace import preset_names
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "app_settings.json"
+        presets = Path(tmp) / "user_presets.json"
+        first = MainFrame(preset_path=presets, settings_path=path)
+        try:
+            assert not path.exists(), "何もしないうちに書いた"
+            assert "前回の設定" not in first.txt_log.GetValue()
+            names = [None if p is None else p.name
+                     for _, p in first.hrtf_choices]
+            pinna = "subj_B.sofa" if "subj_B.sofa" in names else None
+            first.cmb_hrtf.SetSelection(names.index(pinna))
+            first.cmb_sound.SetSelection(2)
+            first.cmb_wobble.SetSelection(1)
+            room = ("preset", preset_names()[1])
+            first.cmb_room.SetSelection(first.room_keys.index(room))
+            first.cmb_furnish.SetSelection(1)
+            first.spn_people.SetValue(3)
+            first.chk_precise.SetValue(True)
+            first.spn_depth.SetValue(50)
+            # 起動時の状態を利用者が決めたものは、変えても保存しない
+            first.cmb_roll.SetSelection(2)
+            first.spn_tilt.SetValue(40)
+            first.chk_floor.SetValue(True)
+            first.repeat_enabled = False
+            # 難易度は選び直したときに保存される（ほかの欄も同じ道）
+            first.cmb_diff.SetSelection(2)
+            event = wx.CommandEvent(wx.wxEVT_CHOICE, first.cmb_diff.GetId())
+            event.SetEventObject(first.cmb_diff)
+            first.cmb_diff.GetEventHandler().ProcessEvent(event)
+            saved = json.loads(path.read_text(encoding="utf-8"))["settings"]
+            assert saved["hrtf"] == (pinna or "synthetic"), saved
+            assert saved["reverb"] == list(room) and saved["difficulty"] == \
+                first.difficulties[2].name, saved
+            for word in ("roll", "tilt", "floor", "repeat", "reference"):
+                assert not any(word in k for k in saved), (word, saved)
+        finally:
+            first.Destroy()
+        second = MainFrame(preset_path=presets, settings_path=path)
+        try:
+            got = second.settings_values()
+            assert got == saved, (got, saved)
+            assert second.cmb_roll.GetSelection() == 0
+            assert second.spn_tilt.GetValue() == 0
+            assert not second.chk_floor.GetValue()
+            assert second.repeat_enabled and second.reference_enabled
+            assert "前回の設定を読み込みました" in second.txt_log.GetValue()
+        finally:
+            second.Destroy()
+    return (f"HRTF・音・首振り・残響・家具・人・精密・難易度・前後の強調の10項目を"
+            f"引き継ぐ（{saved['hrtf']}、{saved['difficulty']}）。首かしげ・上下の"
+            "強調・床の反射・繰り返し再生・基準音は起動時の状態のまま")
+
+
+@test("保存した設定の使えない値と壊れたファイルは、いつもの状態で始めて知らせる")
+def t_settings_unusable(frame: MainFrame) -> str:
+    import json
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "app_settings.json"
+        presets = Path(tmp) / "user_presets.json"
+        path.write_text(json.dumps({"version": 1, "settings": {
+            "hrtf": "subj_無い.sofa", "reverb": ["user", "消した残響"],
+            "front_back": 500, "precise": "はい", "difficulty": "EIGHT"}},
+            ensure_ascii=False), encoding="utf-8")
+        third = MainFrame(preset_path=presets, settings_path=path)
+        try:
+            text = third.txt_log.GetValue()
+            for name in ("HRTF", "残響", "前後の強調", "精密な残響"):
+                assert name in text.split("見つからないか使えないもの")[1], text
+            assert third.difficulties[third.cmb_diff.GetSelection()].name \
+                == "EIGHT", "使える値まで捨てた"
+            assert third.current_hrtf()[1] is None or \
+                third.current_hrtf()[1].stem == "subj_E"
+            assert third.spn_depth.GetValue() == 35
+        finally:
+            third.Destroy()
+        path.write_text("{壊れた", encoding="utf-8")
+        fourth = MainFrame(preset_path=presets, settings_path=path)
+        try:
+            assert "設定のファイルが読めない" in fourth.txt_log.GetValue()
+            assert path.with_suffix(".json.broken").exists()
+            assert not path.exists()
+        finally:
+            fourth.Destroy()
+    return "使えない4項目を挙げ、使える難易度は当てはめる。壊れたファイルは .broken に退けて始める"
+
+
+# 設定の引き継ぎ（2026-11-18）
+TESTS += [t_settings_restore, t_settings_unusable]
 
 
 def main() -> int:
     app = wx.App(False)
     # 自作の空間と残響は一時フォルダに保存する（利用者のファイルを書き換えない）
     presets_dir = tempfile.TemporaryDirectory()
-    frame = MainFrame(preset_path=Path(presets_dir.name) / "user_presets.json")
+    frame = MainFrame(preset_path=Path(presets_dir.name) / "user_presets.json",
+                      settings_path=Path(presets_dir.name) / "app_settings.json")
     log(f"localization_app 構成テスト — wxPython {wx.version()}")
     log("=" * 74)
     for fn in TESTS:

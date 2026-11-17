@@ -96,7 +96,8 @@ class HrirSet:
 
         2D のオーディオゲームは仰角を使わないので、全天球のデータを
         持つ意味がない。それどころか実測で害がある: 1513方向のスペクトル
-        表は 12.4MB あり、そこから毎ブロック行を集めるとキャッシュに
+        表は 12.4MB あり（測った当時。FFT を短くした後は 7.8MB）、そこから
+        毎ブロック行を集めるとキャッシュに
         乗らない。64音源での実測が 5.35ms なのに対し、72方向の合成HRIR
         では 2.5ms しかかからないのは、主にこの差である。
 
@@ -142,11 +143,22 @@ class HrirSet:
 
     @property
     def table_bytes(self) -> int:
-        """畳み込み器が持つスペクトル表のおよその大きさ（ブロック512想定）。
+        """畳み込み器が持つスペクトル表の大きさ（ブロック512想定）。
 
         キャッシュに収まるかどうかの目安。1MB 未満なら軽い。
+        `BinauralConvolver` と同じ数え方: HRIR が1ブロックに収まれば、FFT は
+        線形畳み込みに要る長さ（512 + タップ数 - 1 を速い長さに切り上げ）。
+        収まらなければ 1024 点を区切りの数だけ持つ。複素数1つは8バイト。
         """
-        return self.n_directions * 2 * 513 * 8
+        from scipy import fft as sp_fft
+
+        block = 512
+        parts = max(1, math.ceil(self.taps / block))
+        if parts == 1:
+            nfft = sp_fft.next_fast_len(block + self.taps - 1, real=True)
+        else:
+            nfft = 2 * block
+        return self.n_directions * 2 * parts * (nfft // 2 + 1) * 8
 
     # -- 配布用の軽量形式 -------------------------------------------------
     def save_npz(self, path: str | Path, **meta) -> Path:

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>audiospace 0.7.1 Manual</title>
+<title>audiospace 0.8.0 Manual</title>
 <style>
 :root { color-scheme: light dark; }
 body {
@@ -25,7 +25,7 @@ pre { border: 1px solid #888; padding: 0.5em; overflow-x: auto; }
 </style>
 </head>
 <body>
-<h1>audiospace <span class="version">0.7.1</span> Manual</h1>
+<h1>audiospace <span class="version">0.8.0</span> Manual</h1>
 
 <p>Author: Takahashi. This is the English edition of the manual, written in October 2026.</p>
 <p>audiospace is a 3D audio component (a library) for games and tools for blind and visually impaired people, meant to be heard on headphones. It comes with the Localization Tool, which lets you check which direction sounds come from and how rooms sound. Both work with the keyboard and a screen reader (tested with NVDA and PC-Talker) alone.</p>
@@ -136,7 +136,7 @@ pre { border: 1px solid #888; padding: 0.5em; overflow-x: auto; }
 <li>Status log: a read-only field with the guidance for each mode and the results</li>
 <li>Results: the result of each answer, one per line</li>
 </ul>
-<p>Settings are not saved; every time the tool starts they return to their starting values. F9 reads the current settings.</p>
+<p>Most choices in the settings area carry over to the next start (what carries over is described after the table below). F9 reads the current settings.</p>
 
 <h3>The settings</h3>
 <!-- gen:settings -->
@@ -164,6 +164,8 @@ pre { border: 1px solid #888; padding: 0.5em; overflow-x: auto; }
 </tbody>
 </table>
 <!-- /gen:settings -->
+<p>The choices in the settings area are saved when you close the tool and when you change a setting, and they carry over to the next start. What carries over: HRTF, sound type, head wobble, reverb, space, furniture amount, number of people, precise reverb, difficulty and front/back emphasis. The "value at start" in the table is the value when nothing has been saved yet.</p>
+<p>Head tilt, up/down emphasis and floor reflection always start off, even if you turned them on last time. Repeat playback and the reference sound always start on. The heading always starts at the front, level. When the settings from last time are loaded, the status log says so at its top when the tool starts. F9 reads the current settings.</p>
 
 <h2 id="basics">6. Basic use</h2>
 <p>In every mode, you answer with the numeric keypad after the sound plays. Turn NumLock on (with NumLock off, the keypad keys work as arrows and other keys). Chapter 12 lists the answer keys.</p>
@@ -514,8 +516,8 @@ pre { border: 1px solid #888; padding: 0.5em; overflow-x: auto; }
 <h3>Installing</h3>
 <p>Run the following in this folder. Add playback to play sound on a real device.</p>
 <pre><code>python -m pip install -e ".[playback]"</code></pre>
-<p>To use the distributed wheel (audiospace-<span class="version">0.7.1</span>-py3-none-any.whl), run the following in the folder that has the file. The wheel does not include the measured data of the 20 pinnae; it includes the default pinna (pinna E, horizontal plane only).</p>
-<pre><code>python -m pip install "audiospace-<span class="version">0.7.1</span>-py3-none-any.whl[playback]"</code></pre>
+<p>To use the distributed wheel (audiospace-<span class="version">0.8.0</span>-py3-none-any.whl), run the following in the folder that has the file. The wheel does not include the measured data of the 20 pinnae; it includes the default pinna (pinna E), both the horizontal-only data and the full sphere.</p>
+<pre><code>python -m pip install "audiospace-<span class="version">0.8.0</span>-py3-none-any.whl[playback]"</code></pre>
 
 <h3>Coordinates and facing</h3>
 <p>Coordinates are in metres: x is east, y is north and z is up. The listener's facing (yaw_deg) is an angle counterclockwise from north: 0 faces north and 90 faces west (left).</p>
@@ -530,14 +532,72 @@ player.set_listener((0.0, 0.0, 0.0), yaw_deg=90)   # the listener turns left
 player.engine.set_source_position(h, (0.0, 6.0, 0.0))   # move the sound
 player.stop_sound(h, fade_ms=30)                   # fade out over 30 ms and stop
 print(player.status())                             # a status line to read aloud
-player.stop()</code></pre>
+player.close()                                     # finish (also closes the files being played)</code></pre>
 <p>play takes the name of a file such as a wav, or an array of samples. A file is read once and remembered, so playing it many times does not read it again. Sounds that have finished are cleaned up automatically.</p>
+<p>A long file such as background music (longer than about 44 seconds of 48 kHz stereo) is not decoded whole; it is read a little at a time while it plays. It uses hardly any memory and starts at once. To stream a short file too, add stream=True; to decode a long one whole, add stream=False (see "Long sounds are read a little at a time" in README.en.md).</p>
+
+<h3>Playing a sound later</h3>
+<pre><code>for i in range(4):                                # four steps, 0.4 s apart
+    player.play("step.wav", position=(0.0, 2.0 + i, 0.0), delay_s=0.4 * i)
+
+with player.together():                           # direct sound and floor reflection
+    player.play("bell.wav", position=(0.0, 4.0, 0.0))
+    player.play("bell.wav", position=(0.0, 4.0, -6.0), gain=0.6,
+                delay_s=0.0094)</code></pre>
+<p>With delay_s, a sound starts that many seconds later, exact to the sample. Footstep patterns and rhythm cues need no timer in the game.</p>
+<p>Play sounds whose offsets must stay exact inside with player.together(). Sounds played inside wait until the with-block ends, and all count from the same moment. Calling play several times without together, an audio block may come between the calls, and only the later sound starts about 11 milliseconds late. With reflections and echoes, which work on short offsets, this error is easy to hear. If an exception is raised inside, the sounds played inside are dropped unplayed.</p>
+<p>A waiting sound also holds a source slot. Stopping a waiting sound removes it at once (see "Start time" in README.en.md).</p>
+<p>Delayed or not, a sound starts exactly as its data starts, from its first sample. Until November 18, 2026, the first 11 milliseconds or so faded in from gain 0, so a click that was a single first sample could not be heard. A sound cut in the middle of a waveform clicks at the start, so give the data a short fade (see "A sound starts as its data" in README.en.md).</p>
+
+<h3>Sound groups (volume of effects, music and voice)</h3>
+<pre><code>player.set_group_gain("sfx", 0.7)                 # effects volume
+player.play("step.wav", position=(1.0, 2.0, 0.0), group="sfx")
+player.play("bgm.ogg", spatialise=False, loop=True, group="music")
+player.set_ducking("music", by="voice", db=-12)   # lower the music while a voice plays
+player.play("line01.wav", spatialise=False, group="voice")
+player.pause_group("music")                       # pause only the music
+player.resume_group("music")                      # continue from where it was
+player.stop_group("sfx", fade_ms=30)              # stop all effects</code></pre>
+<p>When you give play a name with group, you can set the volume, pause and stop for each named set. A group's volume multiplies each sound's own gain and distance, so an "effects volume" on a settings screen is a single call to set_group_gain. You can set it before anything plays.</p>
+<p>set_ducking lowers a group while a sound of another group plays. For example, the music goes down by 12 dB while a voice plays and comes back when it ends. The volume set with set_group_gain is kept. For a voice that does not go through this library, such as a screen reader, lower the group with hold_ducking("music", True) and bring it back with hold_ducking("music", False).</p>
+<p>Sounds in no group sound as before (see "Sound groups" in README.en.md).</p>
+
+<h3>Playing the next sound when one ends</h3>
+<pre><code>from audiospace import SOUND_FINISHED
+
+def next_line(event):
+    if event.reason == SOUND_FINISHED:             # it played to the end
+        player.play("line02.wav", spatialise=False)
+
+player.play("line01.wav", spatialise=False, on_end=next_line)
+player.poll_ends()          # call from the game's loop or timer, every 20 to 50 ms</code></pre>
+<p>When you pass a function as on_end, it is called once when the sound ends. event.reason is SOUND_FINISHED when it played to the end, SOUND_STOPPED when it was stopped, and SOUND_ERROR when it was taken out after an error in the source.</p>
+<p>The function is called when you call poll_ends, on the thread that calls it. If you call poll_ends from a GUI timer, the function can touch the widgets. Without a loop of your own, call player.watch_ends(). With wxPython, player.watch_ends(dispatch=wx.CallAfter) hands it to the GUI thread. If you call neither, the function is never called, and status() says so (see "End notices" in README.en.md).</p>
 
 <h3>Helping to tell front, back, up and down apart</h3>
 <pre><code>player.set_emphasis(front_back=0.35, elevation=0.35)   # front/back and up/down emphasis (0 to 1)
 
 from audiospace import ROLL_PRESETS
 player.engine.set_roll_wobble(ROLL_PRESETS["clear"])   # head tilt (12 degrees)</code></pre>
+
+<h3>Making a screen to choose your pinna</h3>
+<pre><code>from audiospace import Difficulty, PinnaSelection, RecordStore, viking_candidates
+
+candidates = viking_candidates("assets/hrtf/viking")
+store = RecordStore(settings_dir / "pinna_records.json")
+selection = PinnaSelection(player, candidates, store, difficulty=Difficulty.EIGHT)
+speak(selection.intro())
+while not selection.finished:
+    if selection.prepare():                 # switched to the next pinna
+        speak(selection.round_text())
+    selection.play(sound)                   # the question sound
+    selection.answer(wait_for_answer())     # the direction answered
+speak(selection.finish())                   # add to the totals, save, restore</code></pre>
+<p>This puts the same flow as this tool's "choose a pinna" (F8) into a game screen. One round compares a few pinnae and always includes the current best as the reference. Listeners improve over time, so the ranking uses the difference from the reference within one round. selection.best() gives the best overall. To choose a pinna for up and down, add mode=MODE_ELEVATION and answer the height with answer_elevation. The pinna data (the SOFA files in assets/hrtf/viking) is not in the wheel, so ship it with your game (see "Choosing a pinna inside a game" in README.en.md).</p>
+
+<h3>Playing sounds above and below</h3>
+<pre><code>player = SpatialPlayer.open(full_sphere=True)   # open with the full sphere of the default pinna</code></pre>
+<p>The default pinna data covers only the horizontal plane, so a sound placed above or below plays as if at ear level. With full_sphere=True, the full sphere of the same pinna E (1513 directions, from 45 degrees below to straight up) is used. It works without sofar. It costs about the same as the horizontal-only data.</p>
 
 <h3>Adding reverb</h3>
 <pre><code>player.set_reverb("hall")                # reverb without direction (names in chapter 9)
@@ -568,8 +628,26 @@ player.set_space(room)
 player.set_reverb(reverb_from_spec({"rt60": 2.5}, player.engine.sample_rate))</code></pre>
 <p>Taking the listener as facing north, north is the front wall, south the back wall, west the left wall and east the right wall. The material names are in the Name (program) column of the appendix. If a value is wrong, the error message says which one, in the display language.</p>
 
+<h3>Sounds through walls (automatic occlusion)</h3>
+<pre><code>from audiospace import Opening
+
+door = Opening((4.9, 2.0, 0.0), (5.1, 2.9, 2.0), name="kitchen_door")   # a doorway
+player.set_spaces([living, kitchen, hall])
+player.set_auto_occlusion(openings=[door])
+player.set_opening("kitchen_door", "wooden_door")   # close the door
+player.set_opening("kitchen_door")                  # open it</code></pre>
+<p>When spaces are registered for each place with set_spaces (or, for a single room, with set_space), set_auto_occlusion makes a sound behind a wall muffled and quieter automatically. How much depends on the wall's material: about 22 dB through concrete, 14 dB through a wooden door and 3 dB through a curtain. Hearing a sound through a wall is itself a cue, so it is never lowered until it cannot be heard.</p>
+<p>Doors and windows are holes cut into walls with Opening (a box around the hole). Place the box so that it covers the wall's thickness. Sound through an open hole is not lowered. When the straight way is blocked by walls, it looks for a way round through holes and open faces, and if that is louder, the sound comes from the direction of your room's doorway. A sound round the corner of a corridor is then heard from the room's doorway.</p>
+<p>A sound played with occlude=False is not lowered by walls. player.sound_occlusion(h).walls tells which walls it passed through (see "Sounds through walls" in README.en.md).</p>
+
 <h3>Display language</h3>
 <p>Text meant for people, such as names, status lines and error messages, is Japanese when the operating system's display language is Japanese and English otherwise (chapter 2). To choose, set AUDIOSPACE_LANG to en or ja before starting the program. Lists of names such as FURNISH_LEVELS are made when audiospace is imported, so the language cannot be changed while the program is running. audiospace.language() returns the language in use.</p>
+
+<h3>When the output device goes away</h3>
+<pre><code>event = player.poll_device()       # call it about once a second
+if event is not None:
+    speak(event.message)           # text to read aloud; speak is your own speech function</code></pre>
+<p>When the sound output stops, for example because headphones were unplugged, poll_device reconnects by itself and tells you that it reconnected or that the device is not back yet. It tells you only when the state changes. If it cannot reconnect, it keeps trying every 3 seconds. When the new device runs at another sample rate, event.kind is DEVICE_RATE_CHANGED; then create the player again with SpatialPlayer.open. player.watch_device(function) does the same on another thread and calls the function with each event (see "When the output device disappears" in README.en.md).</p>
 
 <h3>Trying without sound</h3>
 <p>Setting the environment variable AUDIOSPACE_SILENT to 1 makes it run without opening the audio output. It is used for automatic tests. If you use the engine (SpatialEngine) directly, which does not open the audio output, you get the finished sound as an array.</p>
@@ -581,12 +659,16 @@ player.set_reverb(reverb_from_spec({"rt60": 2.5}, player.engine.sample_rate))</c
 <dl>
 <dt>There is no sound</dt>
 <dd>Check that your headphones are the default playback device in Windows. Also, if the environment variable AUDIOSPACE_SILENT is set to 1, no sound plays (a setting for the automatic tests, for example after running set AUDIOSPACE_SILENT=1 in a command prompt). Starting the tool with the launcher clears this setting.</dd>
+<dt>The sound stopped partway</dt>
+<dd>When the sound output stops, for example because headphones were unplugged, the tool says so and reconnects by itself. If it cannot, connect the headphones or another device again, and the sound comes back within a few seconds. If a question was playing, F4 plays it again.</dd>
 <dt>The tool does not speak</dt>
 <dd>accessible_output2 may not be installed. Run the command of chapter 3 again. The fields of the window can still be read with your screen reader.</dd>
 <dt>Nothing happens when I answer with the keypad</dt>
 <dd>Check that NumLock is on. Also, answers are not accepted before the question sound plays (including the moment just after an answer, while the result is spoken).</dd>
 <dt>The up/down tests or Compare heights do not start</dt>
 <dd>Choose a measured pinna (Measured Viking) in HRTF. The synthetic data has no information about up and down.</dd>
+<dt>I want the settings back as they first were</dt>
+<dd>Close the tool, then delete app_settings.json in the settings folder. At the next start it begins with the "value at start" in the table in chapter 5. If the saved settings file cannot be read, the tool renames it to app_settings.json.broken, starts with the values at start and says so in the status log.</dd>
 <dt>Precise reverb stays on the light version</dt>
 <dd>Spaces with open sides and spaces with furniture or people use the light version. Closed rooms you design yourself cannot be computed without pyroomacoustics. F9 reads which reverb is playing.</dd>
 <dt>I cannot tell front from back</dt>
@@ -601,9 +683,9 @@ player.set_reverb(reverb_from_spec({"rt60": 2.5}, player.engine.sample_rate))</c
 <p>audiospace is under the MIT License: you are free to use it in games, sell it and use it in research. The full text is in LICENSE in the same folder. There is no warranty.</p>
 <p>The default pinna and the measured pinna data in the assets folder come from the Viking HRTF Dataset v2 and are used under CC BY 4.0. They are not covered by the MIT License. When you distribute them in your product, show the following text (ATTRIBUTION.en.md has the details).</p>
 <!-- gen:attribution -->
-<p>This software includes HRTF data from the Viking HRTF Dataset v2 by Spagnol, Miccini and Unnthorsson (2020, https://doi.org/10.5281/zenodo.4160401), based on The Viking HRTF dataset by Spagnol, Purkhus, Bjornsson and Unnthorsson (SMC 2019), used under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Modified: resampled, truncated to two receivers, restricted to the horizontal plane.</p>
+<p>This software includes HRTF data from the Viking HRTF Dataset v2 by Spagnol, Miccini and Unnthorsson (2020, https://doi.org/10.5281/zenodo.4160401), based on The Viking HRTF dataset by Spagnol, Purkhus, Bjornsson and Unnthorsson (SMC 2019), used under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Modified: restricted to the horizontal plane, converted from SOFA to the NumPy npz format.</p>
 <!-- /gen:attribution -->
-<p>This text is for using the default pinna (pinna E, horizontal plane only). The text for using the pinna data in the assets folder (.sofa) unchanged is in ATTRIBUTION.en.md.</p>
+<p>This text is for using the default pinna (pinna E, horizontal plane only). For the full-sphere default (full_sphere=True), attribution(full_sphere=True) returns the text. That text, and the text for using the pinna data in the assets folder (.sofa) unchanged, are in ATTRIBUTION.en.md.</p>
 <p>The table of material absorption was made from the material data of pyroomacoustics (MIT License) (ATTRIBUTION.en.md).</p>
 
 <h3>How this was made</h3>

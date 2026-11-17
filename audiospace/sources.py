@@ -7,6 +7,7 @@ never here.  Four shapes cover the useful cases:
     StereoBufferSource  a stereo asset played flat, as one source
     PushSource          a ring buffer the application writes into
     CallbackSource      a synthesiser function called per block
+    FileStreamSource    a long file read a little at a time on a thread
 
 Sources are mono by default -- `read(n)` returns `(n,)` and `channels` is
 1 -- because a direction can only be given to a mono signal.  A source may
@@ -21,11 +22,19 @@ callback's timing exactly.
 """
 from __future__ import annotations
 
+import threading
+import weakref
 from fractions import Fraction
 from pathlib import Path
 from typing import Callable, Protocol
 
 import numpy as np
+
+from .i18n import tr
+
+
+class DecodeError(ValueError):
+    """音声ファイルを読めない（形式が違う、壊れている、読む道具が無い）。"""
 
 
 class Source(Protocol):
@@ -42,6 +51,10 @@ class Source(Protocol):
     def finished(self) -> bool:
         """True once the source will only ever produce silence again."""
         ...
+
+    # 任意: `sounding` を持つ音源は、それで「いま鳴っているか」を伝える
+    # （ダッキングのきっかけに使う）。持たない音源は、鳴り終わっていなければ
+    # 鳴っているとみなす。
 
 
 class _LoopingBuffer:
@@ -216,6 +229,16 @@ class PushSource:
         return min(self._written - self._consumed, int(self._buf.shape[0]))
 
     @property
+    def sounding(self) -> bool:
+        """書いた音が残っているか（ダッキングのきっかけ）。
+
+        閉じるまで鳴り終わらない音源なので、「鳴り終わっていない」で判断
+        すると、何も書いていない間も声が鳴っている扱いになり、BGM が下がった
+        ままになる。
+        """
+        return self.available > 0
+
+    @property
     def finished(self) -> bool:
         return self.closed and self._written - self._consumed <= 0
 
@@ -261,13 +284,26 @@ class PushSource:
 
 
 class CallbackSource:
-    """Wrap a generator function `fn(n) -> (n,) float32`."""
+    """Wrap a generator function `fn(n) -> (n,) float32`.
+
+    `sounding` is False while the function returns silence (the last block
+    it gave was all zeros), so that a quiet source does not keep another
+    group ducked.
+    """
 
     channels = 1
+    #: これ以下の大きさは無音とみなす（-120dB）
+    SILENCE = 1e-6
 
     def __init__(self, fn: Callable[[int], np.ndarray]) -> None:
         self._fn = fn
         self._done = False
+        self._sounding = True           # 読む前は、これから鳴るものとして扱う
+
+    @property
+    def sounding(self) -> bool:
+        """直前に関数が返した音が無音でなかったか（ダッキングのきっかけ）。"""
+        return self._sounding and not self._done
 
     @property
     def finished(self) -> bool:
@@ -282,7 +318,385 @@ class CallbackSource:
         out = np.asarray(self._fn(n), dtype=np.float32).ravel()
         if out.shape[0] < n:
             out = np.pad(out, (0, n - out.shape[0]))
-        return out[:n]
+        out = out[:n]
+        self._sounding = bool(out.size) and bool(
+            np.max(np.abs(out)) > self.SILENCE)
+        return out
+
+
+# ---------------------------------------------------------------------------
+# 長いファイルを少しずつ読む
+# ---------------------------------------------------------------------------
+class _SoundfileReader:
+    """soundfile（libsndfile）で少しずつ読む。wav・flac・ogg・mp3。"""
+
+    def __init__(self, path: Path) -> None:
+        import soundfile as sf
+        self._file = sf.SoundFile(str(path))
+        self.rate = int(self._file.samplerate)
+        self.channels = int(self._file.channels)
+        self.frames = int(self._file.frames)
+
+    def read(self, n: int) -> np.ndarray:
+        return self._file.read(n, dtype="float32", always_2d=True)
+
+    def seek(self, frame: int) -> None:
+        self._file.seek(int(frame))
+
+    def close(self) -> None:
+        self._file.close()
+
+
+class _MiniaudioReader:
+    """miniaudio で少しずつ読む（soundfile で読めない mp3 など）。"""
+
+    CHUNK = 4096
+
+    def __init__(self, path: Path) -> None:
+        import miniaudio
+        self._ma = miniaudio
+        self._path = str(path)
+        info = miniaudio.get_file_info(self._path)
+        self.rate = int(info.sample_rate)
+        self.channels = int(info.nchannels)
+        self.frames = int(info.num_frames)
+        self._gen = None
+        self._pending = np.zeros((0, self.channels), dtype=np.float32)
+        self.seek(0)
+
+    def seek(self, frame: int) -> None:
+        self.close()
+        self._gen = self._ma.stream_file(
+            self._path, output_format=self._ma.SampleFormat.FLOAT32,
+            nchannels=self.channels, sample_rate=self.rate,
+            frames_to_read=self.CHUNK, seek_frame=int(frame))
+        self._pending = np.zeros((0, self.channels), dtype=np.float32)
+
+    def read(self, n: int) -> np.ndarray:
+        parts = [self._pending]
+        have = self._pending.shape[0]
+        while have < n and self._gen is not None:
+            try:
+                chunk = next(self._gen)
+            except StopIteration:
+                self._gen = None
+                break
+            data = np.frombuffer(chunk, dtype=np.float32).reshape(
+                -1, self.channels)
+            parts.append(data)
+            have += data.shape[0]
+        joined = np.concatenate(parts) if len(parts) > 1 else parts[0]
+        self._pending = joined[n:]
+        return np.ascontiguousarray(joined[:n])
+
+    def close(self) -> None:
+        if self._gen is not None:
+            self._gen.close()
+            self._gen = None
+
+
+def _open_reader(path: str | Path, backend: str | None = None):
+    """少しずつ読む道具を開く。soundfile、だめなら miniaudio。
+
+    どちらでも開けないときは、ファイルの名前と両方の理由を添えた
+    DecodeError（`_decode` と同じ考え方）。
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+    reasons = []
+    for name, cls in (("soundfile", _SoundfileReader),
+                      ("miniaudio", _MiniaudioReader)):
+        if backend is not None and backend != name:
+            continue
+        try:
+            return cls(path)
+        except Exception as exc:                 # noqa: BLE001
+            reasons.append(f"{name}: {type(exc).__name__}: {exc}")
+    raise DecodeError(tr(
+        f"音声ファイルを少しずつ読めません: {path.name}（{'、'.join(reasons)}）",
+        f"Cannot stream the audio file {path.name} "
+        f"({'; '.join(reasons)})"))
+
+
+def audio_file_info(path: str | Path) -> tuple[int, int, int]:
+    """ファイルの (フレーム数, サンプルレート, チャンネル数) を、中身を
+    読まずに返す。読めなければ DecodeError か FileNotFoundError。"""
+    reader = _open_reader(path)
+    try:
+        return reader.frames, reader.rate, reader.channels
+    finally:
+        reader.close()
+
+
+def can_resample_streaming() -> bool:
+    """少しずつのリサンプリング（samplerate）が使えるか。"""
+    try:
+        import samplerate
+        return hasattr(samplerate, "Resampler")
+    except ImportError:
+        return False
+
+
+class _StreamState:
+    """読み込みのスレッドと音声のスレッドが分け合う状態。
+
+    書くのは読み込みのスレッドだけ（written）、読むのは音声のスレッド
+    だけ（consumed）。どちらも増えていくだけの数なので、PushSource と
+    同じく鍵なしで安全。書く側は空きがあるときだけ書く（読まれていない
+    ところを上書きしない）。
+    """
+
+    def __init__(self, reader, ratio: float, channels: int, capacity: int,
+                 loop: bool, loop_start: int, loop_end: int,
+                 chunk: int) -> None:
+        #: 空きが足りず書ききれなかった残り。次の step で先に書く
+        self.pending: np.ndarray | None = None
+        self.reader = reader
+        self.ratio = ratio
+        self.channels = channels
+        self.capacity = capacity
+        shape = (capacity,) if channels == 1 else (capacity, 2)
+        self.buf = np.zeros(shape, dtype=np.float32)
+        self.written = 0
+        self.consumed = 0
+        self.loop = loop
+        self.loop_start = loop_start
+        self.loop_end = loop_end
+        self.chunk = chunk
+        self.chunk_out = int(chunk * ratio) + 64
+        self.pos = 0
+        self.cycle = 0              # いまの一巡で読んだフレーム数
+        self.eof = False
+        self.error = ""
+        self.underruns = 0
+        self.stop = threading.Event()
+        self.wake = threading.Event()
+        self.resampler = None
+        if abs(ratio - 1.0) > 1e-12:
+            import samplerate
+            self.resampler = samplerate.Resampler("sinc_medium",
+                                                  channels=channels)
+
+    @property
+    def space(self) -> int:
+        return self.capacity - (self.written - self.consumed)
+
+    def _convert(self, data: np.ndarray) -> np.ndarray:
+        """読んだ (フレーム, ch) を、鳴らすチャンネル数にする。"""
+        if self.channels == 1:
+            return (data.mean(axis=1) if data.shape[1] > 1
+                    else data[:, 0]).astype(np.float32)
+        if data.shape[1] == 1:
+            return np.repeat(data, 2, axis=1)
+        return data[:, :2]
+
+    @property
+    def drained(self) -> bool:
+        """読み終え、書ききった（あとは鳴らすだけ）。"""
+        return self.eof and self.pending is None
+
+    def _write(self, y: np.ndarray) -> None:
+        """空きのぶんだけ書き、残りは pending に持ち越す（待たない。待つと、
+        作るときの先読みで読む側がいないまま止まる）。"""
+        n = int(y.shape[0])
+        take = min(max(0, self.space), n)
+        if take > 0:
+            pos = self.written % self.capacity
+            end = pos + take
+            if end <= self.capacity:
+                self.buf[pos:end] = y[:take]
+            else:
+                split = self.capacity - pos
+                self.buf[pos:] = y[:split]
+                self.buf[:end - self.capacity] = y[split:take]
+            self.written += take
+        self.pending = y[take:] if take < n else None
+
+    def step(self) -> None:
+        """1かたまり読んで、変換して、輪のバッファに書く。"""
+        if self.pending is not None:
+            rest, self.pending = self.pending, None
+            self._write(rest)
+            return
+        end = self.loop_end or self.reader.frames
+        want = self.chunk if end <= 0 else min(self.chunk, end - self.pos)
+        data = (self.reader.read(want) if want > 0
+                else np.zeros((0, self.reader.channels), dtype=np.float32))
+        k = int(data.shape[0])
+        self.pos += k
+        self.cycle += k
+        if k:
+            y = self._convert(data)
+            if self.resampler is not None:
+                y = self.resampler.process(y, self.ratio, end_of_input=False)
+            self._write(np.asarray(y, dtype=np.float32))
+        at_end = k == 0 or (end > 0 and self.pos >= end)
+        if not at_end:
+            return
+        if self.loop and self.cycle > 0:
+            self.reader.seek(self.loop_start)
+            self.pos = self.loop_start
+            self.cycle = 0
+            return
+        if self.resampler is not None:
+            empty = np.zeros((0,) if self.channels == 1 else (0, 2),
+                             dtype=np.float32)
+            self._write(np.asarray(self.resampler.process(
+                empty, self.ratio, end_of_input=True), dtype=np.float32))
+        self.eof = True
+
+
+def _feed(state: _StreamState, owner) -> None:
+    """読み込みのスレッド。音源が捨てられたか、止められたか、読み終えたら
+    終わり、ファイルを閉じる。音源そのものは弱い参照でしか持たない（持つと
+    捨てられた音源のスレッドが残り続ける）。"""
+    try:
+        while not state.stop.is_set() and not state.drained:
+            if owner() is None:
+                break
+            if state.space < state.chunk_out:
+                state.wake.wait(0.1)
+                state.wake.clear()
+                continue
+            state.step()
+    except Exception as exc:                      # noqa: BLE001
+        state.error = f"{type(exc).__name__}: {exc}"
+        state.eof = True
+    finally:
+        try:
+            state.reader.close()
+        except Exception:                         # noqa: BLE001
+            pass
+
+
+class FileStreamSource:
+    """長い音声ファイルを、別のスレッドで少しずつ読みながら鳴らす。
+
+    1曲を丸ごと読むと、48kHz ステレオの3分の曲で約66MB になる。これは
+    読み込みのスレッドが `buffer_seconds` 秒先までを輪のバッファに読み、
+    音声のスレッドはそこから取り出すだけ。メモリは2秒のステレオで約0.8MB。
+
+    path          wav・flac・ogg・mp3（soundfile、だめなら miniaudio で読む）
+    sample_rate   鳴らすレート（エンジンのレート）。ファイルと違えば
+                  samplerate で少しずつ変換する（無ければ ValueError）
+    channels      1（空間化する音。チャンネルを平均する）か 2（平置きの
+                  ステレオ。モノラルのファイルは両方に入れる）
+    loop          最後まで読んだら loop_start へ戻る（つなぎ目は途切れない）
+    loop_start, loop_end   ループの区間（ファイルのフレーム。0 は終わり）
+
+    作るときに最初の少し（0.5秒）を読んでおくので、鳴らし始めで途切れない。
+    読み込みが間に合わなかったブロックは無音になり、`underruns` に数える。
+    読み込み中にファイルが読めなくなったら、残りを鳴らした後の read() が
+    例外を出す（エンジンはその音だけを外し、鳴り終わりの知らせは error）。
+    エンジンから外されて捨てられると、読み込みのスレッドも自然に終わる。
+    """
+
+    PREFILL_SECONDS = 0.5
+    CHUNK_FRAMES = 4096
+
+    def __init__(self, path: str | Path, sample_rate: int | None = None, *,
+                 channels: int = 1, loop: bool = False, loop_start: int = 0,
+                 loop_end: int = 0, buffer_seconds: float = 2.0,
+                 _backend: str | None = None) -> None:
+        if channels not in (1, 2):
+            raise ValueError(f"channels must be 1 or 2, got {channels!r}")
+        reader = _open_reader(path, _backend)
+        try:
+            rate = int(sample_rate or reader.rate)
+            ratio = rate / reader.rate
+            if abs(ratio - 1.0) > 1e-12 and not can_resample_streaming():
+                raise ValueError(tr(
+                    f"{Path(path).name} は {reader.rate}Hz で、鳴らすレート "
+                    f"{rate}Hz と違います。少しずつ変換するには samplerate "
+                    "が要ります",
+                    f"{Path(path).name} is {reader.rate} Hz, not the "
+                    f"playback rate {rate} Hz. Converting it a little at a "
+                    "time needs samplerate"))
+            frames = max(0, reader.frames)
+            end = min(int(loop_end), frames) if loop_end else 0
+            # ループの始めは、終わりの手前に収める（BufferSource と同じ。
+            # 終わり以降だと一巡が空になり、繰り返さずに鳴り終わっていた）
+            stop = end if end > 0 else frames
+            start = max(0, min(int(loop_start), max(0, stop - 1)))
+            capacity = max(rate // 10, int(float(buffer_seconds) * rate))
+            state = _StreamState(reader, ratio, channels, capacity,
+                                 bool(loop), start, end, self.CHUNK_FRAMES)
+            # 最初の少しを、ここで読んでおく（鳴らし始めで途切れないように）
+            prefill = min(capacity - state.chunk_out,
+                          int(self.PREFILL_SECONDS * rate))
+            while state.written < prefill and not state.drained:
+                state.step()
+        except Exception:
+            reader.close()
+            raise
+        self.channels = channels
+        self.sample_rate = rate
+        self.duration_s = frames / reader.rate if reader.rate else 0.0
+        self._state = state
+        self._thread = None
+        if not state.drained:
+            self._thread = threading.Thread(
+                target=_feed, args=(state, weakref.ref(self)),
+                name="audiospace-stream", daemon=True)
+            self._thread.start()
+        else:
+            reader.close()
+
+    @property
+    def underruns(self) -> int:
+        """読み込みが間に合わず、無音を出したブロックの数。"""
+        return self._state.underruns
+
+    @property
+    def finished(self) -> bool:
+        st = self._state
+        # 読めなくなったときは「鳴り終わった」にしない。次の read() が例外を
+        # 出して、エンジンがその音を error として外す
+        return st.stop.is_set() or (st.drained and not st.error
+                                    and st.consumed >= st.written)
+
+    def close(self, wait_s: float = 0.0) -> None:
+        """読み込みを止める（その後は無音で、finished は True）。
+
+        ファイルは読み込みのスレッドが閉じる。`wait_s` を渡すと、閉じ終わる
+        のをその秒数まで待つ（すぐ後でファイルを消す・置き換えるとき）。
+        """
+        self._state.stop.set()
+        self._state.wake.set()
+        thread = self._thread
+        if (wait_s > 0.0 and thread is not None
+                and thread is not threading.current_thread()):
+            thread.join(timeout=float(wait_s))
+
+    def read(self, n: int) -> np.ndarray:
+        st = self._state
+        shape = (n,) if self.channels == 1 else (n, 2)
+        out = np.zeros(shape, dtype=np.float32)
+        if st.stop.is_set():
+            return out
+        cap = st.capacity
+        written = st.written            # 書く側が先へ進んでもよいように控える
+        start = st.consumed
+        take = min(n, written - start)
+        if take > 0:
+            pos = start % cap
+            end = pos + take
+            if end <= cap:
+                out[:take] = st.buf[pos:end]
+            else:
+                split = cap - pos
+                out[:split] = st.buf[pos:]
+                out[split:take] = st.buf[:end - cap]
+            st.consumed = start + take
+        if take < n:
+            if st.error:
+                # 鳴らせる分を鳴らし終えた。外してもらう
+                raise RuntimeError(st.error)
+            if not st.drained:
+                st.underruns += 1
+        st.wake.set()
+        return out
 
 
 def load_mono(path: str | Path,
@@ -418,11 +832,28 @@ def _decode(path: Path) -> tuple[np.ndarray, int]:
         import soundfile as sf
         data, rate = sf.read(str(path), dtype="float32", always_2d=False)
         return np.asarray(data, dtype=np.float32), int(rate)
-    except Exception:                            # noqa: BLE001
-        pass
-    import miniaudio
-    decoded = miniaudio.decode_file(str(path),
-                                    output_format=miniaudio.SampleFormat.FLOAT32)
+    except Exception as exc:                     # noqa: BLE001
+        first = f"soundfile: {type(exc).__name__}: {exc}"
+    # どちらでも読めないときは、ファイルの名前と両方の理由を添える。
+    # 理由を捨てると「failed to decode file」としか分からず、miniaudio が
+    # 入っていない環境では、ファイルの問題が「miniaudio が無い」に化ける
+    try:
+        import miniaudio
+    except ImportError:
+        raise DecodeError(tr(
+            f"音声ファイルを読めません: {path.name}（{first}。mp3 を読むには "
+            "miniaudio が要ります）",
+            f"Cannot decode the audio file {path.name} ({first}; reading "
+            "mp3 needs miniaudio)")) from None
+    try:
+        decoded = miniaudio.decode_file(
+            str(path), output_format=miniaudio.SampleFormat.FLOAT32)
+    except Exception as exc:                     # noqa: BLE001
+        raise DecodeError(tr(
+            f"音声ファイルを読めません: {path.name}（{first}、"
+            f"miniaudio: {exc}）",
+            f"Cannot decode the audio file {path.name} ({first}; "
+            f"miniaudio: {exc})")) from exc
     samples = np.frombuffer(decoded.samples, dtype=np.float32)
     if decoded.nchannels > 1:
         samples = samples.reshape(-1, decoded.nchannels)

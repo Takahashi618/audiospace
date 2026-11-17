@@ -264,7 +264,7 @@ def part_answers() -> str:
     import wx
 
     from demo.localization_app import MainFrame
-    from demo.quiz import direction_name, elevation_name, rotation_name
+    from audiospace.quiz import direction_name, elevation_name, rotation_name
     codes = [wx.WXK_NUMPAD_DIVIDE, wx.WXK_NUMPAD_MULTIPLY] + [
         getattr(wx, f"WXK_NUMPAD{d}") for d in (7, 8, 9, 4, 5, 6, 1, 2, 3, 0)]
     key = tr("キー", "Key")
@@ -310,7 +310,10 @@ def make_frame():
     from demo.localization_app import MainFrame
     app = wx.App.Get() or wx.App(False)
     tmp = tempfile.TemporaryDirectory(prefix="audiospace_manual_")
-    frame = MainFrame(preset_path=Path(tmp.name) / "user_presets.json")
+    # 設定のファイルも一時フォルダにする（利用者が保存した選択を、表の
+    # 「起動時の値」として書かないように）
+    frame = MainFrame(preset_path=Path(tmp.name) / "user_presets.json",
+                      settings_path=Path(tmp.name) / "app_settings.json")
     return app, frame, tmp
 
 
@@ -435,7 +438,7 @@ def reset_mode(frame) -> None:
 
 def part_counts(frame) -> str:
     """モードごとの問題数。実際にモードを始めて数える（式を書き写さない）。"""
-    from demo.quiz import Difficulty
+    from audiospace.quiz import Difficulty
     diffs = [Difficulty.LEFT_RIGHT, Difficulty.FOUR, Difficulty.EIGHT,
              Difficulty.TWELVE]
     labels = [d.label for d in diffs]
@@ -656,7 +659,7 @@ def build_parts() -> dict[str, str]:
     finally:
         reset_mode(frame)
         if frame.player is not None:
-            frame.player.stop()
+            frame.player.close()
         frame.Destroy()
         tmp.cleanup()
     return parts

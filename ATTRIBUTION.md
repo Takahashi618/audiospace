@@ -46,8 +46,9 @@ SOFTWARE.
 
 ## Viking HRTF Dataset v2
 
-- **場所**: `assets/hrtf/viking/subj_*.sofa`（無改変）と、
-  そこから作った既定 HRTF `audiospace/data/default_horizontal.npz`（改変あり）
+- **場所**: `assets/hrtf/viking/subj_*.sofa`（無改変）と、そこから作った
+  既定 HRTF の `audiospace/data/default_horizontal.npz`（改変あり）と、
+  全天球の `audiospace/data/default_sphere.npz`（測定値は変えず、npz に変換）
 - **ライセンス**: Creative Commons Attribution 4.0 International (CC BY 4.0)
   https://creativecommons.org/licenses/by/4.0/
 - **v2 の作者**: Simone Spagnol, Riccardo Miccini, Rúnar Unnthórsson
@@ -71,8 +72,8 @@ by Spagnol, Miccini and Unnthorsson (2020,
 https://doi.org/10.5281/zenodo.4160401), based on The Viking HRTF
 dataset by Spagnol, Purkhus, Bjornsson and Unnthorsson (SMC 2019),
 used under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
-Modified: resampled, truncated to two receivers, restricted to the
-horizontal plane.
+Modified: restricted to the horizontal plane, converted from SOFA to the
+NumPy npz format.
 ```
 
 日本語版:
@@ -82,9 +83,36 @@ horizontal plane.
 Unnthorsson 作、2020年、https://doi.org/10.5281/zenodo.4160401）の
 HRTF データを含みます。元は The Viking HRTF dataset（Spagnol, Purkhus,
 Bjornsson, Unnthorsson 作、SMC 2019）です。CC BY 4.0
-（https://creativecommons.org/licenses/by/4.0/）のもとで使用し、
-リサンプリング・受信点を2つに削減・水平面のみに限定して改変しています。
+（https://creativecommons.org/licenses/by/4.0/）のもとで使用しています。
+改変: 水平面のみに限定・SOFA から NumPy の npz 形式に変換。
 ```
+
+全天球の既定 HRTF（`default_hrir(full_sphere=True)`、
+`SpatialPlayer.open(full_sphere=True)`）を使う場合の文面。
+`audiospace.attribution(full_sphere=True)` も同じ英文を返す。
+
+```
+This software includes HRTF data from the Viking HRTF Dataset v2 by
+Spagnol, Miccini and Unnthorsson (2020,
+https://doi.org/10.5281/zenodo.4160401), based on The Viking HRTF
+dataset by Spagnol, Purkhus, Bjornsson and Unnthorsson (SMC 2019), used
+under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+Modified: converted from SOFA to the NumPy npz format (the measured
+values are unchanged).
+```
+
+日本語版:
+
+```
+本ソフトウェアは Viking HRTF Dataset v2（Spagnol, Miccini,
+Unnthorsson 作、2020年、https://doi.org/10.5281/zenodo.4160401）の
+HRTF データを含みます。元は The Viking HRTF dataset（Spagnol, Purkhus,
+Bjornsson, Unnthorsson 作、SMC 2019）です。CC BY 4.0
+（https://creativecommons.org/licenses/by/4.0/）のもとで使用しています。
+改変: SOFA から NumPy の npz 形式に変換（測定値は変えていない）。
+```
+
+両方を使う場合は、水平面の文面と全天球の文面を並べて載せれば確実。
 
 SOFA を無改変のまま使う場合は、最後の改変の文（Modified 以降）を除く。
 `tools/bake_hrtf_asset.py` を別の条件で焼いた場合は、npz に入る文面が

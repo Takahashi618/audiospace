@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 os.environ["AUDIOSPACE_SILENT"] = "1"
@@ -35,11 +36,11 @@ from audiospace import (FURNISH_LEVELS, SpatialPlayer, describe_presets,  # noqa
 from demo import localization_app as app_mod  # noqa: E402
 from demo.localization_app import MainFrame, answer_text  # noqa: E402
 from demo.preset_editor import ReverbEditor, SpaceEditor  # noqa: E402
-from demo.quiz import (ABWobbleSession, CalibrationSession,  # noqa: E402
+from audiospace.quiz import (ABWobbleSession, CalibrationSession,  # noqa: E402
                        Difficulty, ElevationCalibrationSession,
                        ElevationSession, FrontElevationSession, QuizSession,
                        RotationSession, TrainingSession)
-from demo.records import RecordStore  # noqa: E402
+from audiospace.records import RecordStore  # noqa: E402
 
 #: 日本語の文字（かな・漢字・全角の記号と句読点）
 JAPANESE = re.compile(r"[　-ヿ㐀-鿿＀-￯]")
@@ -126,7 +127,7 @@ def sessions() -> None:
         answer_all(session, el)
         take("elevation", [session.summary(), session.detail_lines()])
 
-    from demo.quiz import ROTATION_REVERSE
+    from audiospace.quiz import ROTATION_REVERSE
 
     def rot(s, t):
         s.answer_rotation(ROTATION_REVERSE[t.truth_motion] if t.index % 2
@@ -148,6 +149,46 @@ def sessions() -> None:
         elev_store.update(calib.scores(), None, n_directions=8)
         take("records elev", [elev_store.summary(pool),
                               elev_store.detail_lines()])
+        # ライブラリの耳介の選定（読み込みは合成の HRTF で代える）
+        import numpy as np
+
+        from audiospace import (MODE_ELEVATION, HrirSet, PinnaSelection,
+                                SpatialPlayer)
+        from audiospace.pinna import pinna_label
+        take("pinna labels", [pinna_label("subj_E.sofa"),
+                              pinna_label("subj_Z.sofa")])
+        player = SpatialPlayer.open(block=512, max_sources=4, reverb=None,
+                                    hrir=HrirSet.synthetic(sample_rate=48000))
+        try:
+            fake = [("a.sofa", "pinna A"), ("b.sofa", "pinna B")]
+            sel_store = RecordStore(Path(tmp) / "sel.json")
+            sel = PinnaSelection(player, fake, sel_store, loader=lambda t, r:
+                                 HrirSet.synthetic(sample_rate=r))
+            take("pinna intro", sel.intro())
+            sel.prepare()
+            take("pinna round", sel.round_text())
+            try:
+                sel.finish()
+            except RuntimeError as exc:
+                take("pinna not finished", str(exc))
+            while not sel.finished:
+                sel.play(np.zeros(48, np.float32))
+                sel.answer(sel.current().truth_deg)
+            take("pinna finish", sel.finish(save=False))
+            flat = PinnaSelection(player, fake, sel_store, mode=MODE_ELEVATION,
+                                  loader=lambda t, r:
+                                  HrirSet.synthetic(sample_rate=r))
+            take("pinna elevation intro", flat.intro())
+            try:
+                flat.prepare()
+            except ValueError as exc:
+                take("pinna no elevation", str(exc))
+            try:
+                PinnaSelection(player, fake[:1], sel_store)
+            except ValueError as exc:
+                take("pinna too few", str(exc))
+        finally:
+            player.stop()
 
     for correct in (True, False):
         take("answer", answer_text(3, correct, "", "front"))
@@ -188,9 +229,98 @@ def library() -> None:
         space_from_spec({"kind": "room"})
     except ValueError as exc:
         take("space_from_spec", str(exc))
+    try:
+        audiospace.reverb_from_spec({"rt60": 99, "width": 5}, 48000)
+    except ValueError as exc:
+        take("reverb_from_spec", str(exc))
+    # 読めない音声ファイルの誤り（ファイルの名前は英語にしておく）
+    with tempfile.TemporaryDirectory() as tmp:
+        bad = Path(tmp) / "broken.wav"
+        bad.write_bytes(b"RIFF\x00\x00\x00\x00WAVEjunk")
+        try:
+            audiospace.load_mono(bad)
+        except audiospace.DecodeError as exc:
+            # soundfile の文は一時フォルダのパスを含む（利用者名が日本語の
+            # PC もある）ので、パスを除いてから調べる
+            take("decode error", re.sub(r"'[^']*'", "'<path>'", str(exc)))
     player = SpatialPlayer.open(block=512, max_sources=4)
     try:
         take("player status", player.status())
+        player.engine.source_errors = 1
+        player.engine.last_source_error = "RuntimeError: x"
+        player.block_mismatches = 1
+        player.last_mismatch_frames = 256
+        # 鳴り終わりの関数の誤りと、届けていない知らせ
+        player.callback_errors = 1
+        player.last_callback_error = "ValueError: x"
+        import numpy as np
+        player.play(np.zeros(480, np.float32), on_end=lambda e: None)
+        for _ in range(200):
+            if player.engine.pending_ends():
+                break
+            time.sleep(0.01)
+        with player.engine._lock:
+            player.engine._elapsed += 5.0
+        # 長いファイルを少しずつ読む音: 読み込みが間に合わなかった数と、誤り。
+        # 一時フォルダは終わったら消す（少しずつ読む音を止めてから）
+        import soundfile as sf
+        stream_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        wav = Path(stream_dir.name) / "stream.wav"
+        sf.write(wav, np.zeros((4800, 2), np.float32), 44100)
+        streamed = player.play(wav, spatialise=False, stream=True, loop=True)
+        source = player.engine.get_source(streamed).source
+        source._state.underruns = 2
+        # 空間の無い自動の遮蔽も、状態の文に出る
+        player.set_auto_occlusion()
+        take("player status errors", player.status())
+        player.set_auto_occlusion(False)
+        player.stop_sound(streamed)
+        source.close()
+        try:
+            player.play(wav, stream=True, rate=1.5)
+        except ValueError as exc:
+            take("stream and rate", str(exc))
+        try:
+            player.play(np.zeros(48, np.float32), stream=True)
+        except ValueError as exc:
+            take("stream not a file", str(exc))
+        source._thread.join(timeout=2.0)
+        stream_dir.cleanup()
+        try:
+            audiospace.FileStreamSource(Path(__file__), 48000)
+        except audiospace.DecodeError as exc:
+            take("stream decode", re.sub(r"'[^']*'", "'<path>'", str(exc)))
+        player.poll_ends()
+        player.callback_errors = 0
+        player.reset_stats()
+        # 出力デバイスの見張りの知らせ（実機を模す。デバイスは開かない）
+        from audiospace.device import DeviceChoice
+        state = {"lost": True, "fail": None}
+
+        def reopen(*a, **k):
+            if state["fail"] is not None:
+                raise state["fail"]
+            state["lost"] = False
+            return True
+
+        player.silent = False
+        player.check_device = lambda: state["lost"]
+        player.reopen = reopen
+        player.choice = DeviceChoice(0, "Dev", "Windows WASAPI", 48000, 10.0)
+        events = [player.poll_device()]
+        state.update(lost=True, fail=RuntimeError("no device"))
+        events.append(player.poll_device())
+        player._retry_at = 0.0
+        state["fail"] = audiospace.DeviceRateError("44100 Hz")
+        events.append(player.poll_device())
+        take("device events", [e.message for e in events if e is not None])
+        player._device_lost = True
+        player.last_error = "x"
+        take("status lost", player.status())
+        player._device_lost = False
+        del player.check_device, player.reopen
+        player.choice = None
+        player.silent = True
         for late in (False, True, "precise"):
             for key in ("wood_room", "street", "open_road"):
                 player.set_space(space_preset(key), late=late)
@@ -206,7 +336,13 @@ def frame_texts(app: wx.App) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         # 耳介の通算成績を一時フォルダに向ける（利用者の記録を読み書きしない）
         app_mod.LOG_DIR = Path(tmp) / "logs"
-        frame = MainFrame(preset_path=Path(tmp) / "user_presets.json")
+        # 前回の設定の読み込みの文も英語で出るように、使えない値を混ぜて置く
+        settings = Path(tmp) / "app_settings.json"
+        settings.write_text('{"version": 1, "settings": {"hrtf": "nope.sofa", '
+                            '"difficulty": "EIGHT"}}', encoding="utf-8")
+        frame = MainFrame(preset_path=Path(tmp) / "user_presets.json",
+                          settings_path=settings)
+        take("restored settings", frame.txt_log.GetValue().split("\n\n")[0])
         frame.records = RecordStore(Path(tmp) / "records.json")
         frame.records_elev = RecordStore(Path(tmp) / "records_elev.json",
                                          fb_name="up/down")
@@ -263,6 +399,40 @@ def frame_texts(app: wx.App) -> None:
             take("refuse", [frame.speech.log, frame.txt_log.GetValue()])
             frame._stop_repeat()
             frame.stop_sound()
+
+            # 出力デバイスが失われたときの読み上げ（つなぎ直せた・できない・
+            # レートが違うので作り直した）
+            player = frame.player
+            state = {"lost": True, "fail": None}
+
+            def reopen(*a, **k):
+                if state["fail"] is not None:
+                    raise state["fail"]
+                state["lost"] = False
+                return True
+
+            player.check_device = lambda: state["lost"]
+            player.reopen = reopen
+            player.silent = False       # 実機を模す（デバイスは開かない）
+            frame.speech.log.clear()
+            frame.check_output()
+            state.update(lost=True, fail=RuntimeError("no device"))
+            frame.check_output()
+            state["fail"] = audiospace.DeviceRateError("44100 Hz")
+            player._retry_at = 0.0
+            frame.check_output()
+            take("device lost", [frame.speech.log, frame.txt_log.GetValue()])
+            player.silent = True
+            frame._stop_repeat()
+            frame.stop_sound()
+
+            # 保存できない理由（区切りも英語の「; 」になる）
+            for put in (frame.user_presets.put_space,
+                        frame.user_presets.put_reverb):
+                try:
+                    put("", {"kind": "?", "rt60": 99})
+                except ValueError as exc:
+                    take("put problems", str(exc))
 
             for editor_cls in (SpaceEditor, ReverbEditor):
                 dlg = editor_cls(frame)

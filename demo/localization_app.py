@@ -34,7 +34,6 @@ import datetime as dt
 import math
 import sys
 import time
-from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -43,27 +42,32 @@ import wx
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from audiospace import (DEFAULT_PINNA, ROLL_PRESETS,  # noqa: E402
+from audiospace import (DEFAULT_PINNA, DEVICE_LOST,  # noqa: E402
+                        DEVICE_RATE_CHANGED, DEVICE_RESTORED, ROLL_PRESETS,
                         WOBBLE_PRESETS, HrirSet, SpatialPlayer,
                         preset_names, roll_labels, space_labels,
                         wobble_labels)
-from demo.quiz import (ELEVATION_LEVELS, ROTATION_ARC_SECONDS,  # noqa: E402
+from audiospace.quiz import (ELEVATION_LEVELS, ROTATION_ARC_SECONDS,  # noqa: E402
                        ABWobbleSession, CalibrationSession, Difficulty,
                        ElevationCalibrationSession, ElevationSession,
                        FrontElevationSession, QuizSession, RotationSession,
                        RotationTrial, TrainingSession, direction_name,
                        elevation_name, position_for, rotation_name)
-from demo.records import (MIN_DIRECTIONS_FOR_RANKING,  # noqa: E402
-                          RecordStore)
+from audiospace.pinna import pinna_label  # noqa: E402
+from audiospace.records import (MIN_DIRECTIONS_FOR_RANKING,  # noqa: E402
+                                RecordStore)
 from demo.preset_editor import ReverbEditor, SpaceEditor  # noqa: E402
 from demo.user_presets import DEFAULT_PATH as USER_PRESETS_PATH  # noqa: E402
+from demo.app_settings import DEFAULT_PATH as APP_SETTINGS_PATH  # noqa: E402
+from demo.app_settings import AppSettingsStore  # noqa: E402
 from demo.user_presets import UserPresetStore  # noqa: E402
 from audiospace import (FURNISH_LEVELS, contents_text,  # noqa: E402
                         furnish_counts, reverb_from_spec, space_from_spec,
                         space_preset)
 from demo.speech import Speech  # noqa: E402
 from demo.preset_editor import USER_PREFIX  # noqa: E402
-from audiospace.i18n import is_japanese, join_sentences, tr  # noqa: E402
+from audiospace.i18n import (is_japanese, join_sentences,  # noqa: E402
+                             list_sep, tr)
 
 HRTF_DIR = ROOT / "assets" / "hrtf" / "viking"
 LOG_DIR = ROOT / "logs"
@@ -92,6 +96,11 @@ FLOOR_DEPTH_M = 3.0
 FLOOR_REFLECTION_GAIN = 0.6     # 床で失う分。硬い床ほど 1 に近い
 FLOOR_IMAGE_MIN_EL = -45.0      # 反射音の方向の下限（Viking の測定範囲）
 SPEED_OF_SOUND = 343.0
+#: 出力デバイスを見張る間隔（ミリ秒）。ヘッドホンを抜くと出力は黙って
+#: 止まり、画面の見えない利用者には気づく手段が無いので、アプリが見張って
+#: 知らせる。つなぎ直せなかったときに試し直す間隔はライブラリが持つ
+#: （SpatialPlayer.device_retry_s、3秒）
+DEVICE_CHECK_MS = 1000
 #: 耳介の選定に要る実測 HRTF が無いとき
 NOT_ENOUGH_HRTF = tr("実測HRTFが足りません。"
                      "tools のフェッチスクリプトで取得してください。",
@@ -114,13 +123,8 @@ def list_hrtf_choices() -> list[tuple[str, Path | None]]:
             "Synthetic HRIR (no front/back difference, fewest "
             "dependencies)"), None)]
     for path in sorted(HRTF_DIR.glob("subj_*.sofa")):
-        letter = path.stem.replace("subj_", "")
-        if letter == "Z":
-            label = tr("実測 Viking 耳介なし", "Measured Viking without pinna")
-        else:
-            label = tr(f"実測 Viking 耳介{letter}",
-                       f"Measured Viking pinna {letter}")
-        items.append((label, path))
+        # 表示名はライブラリの耳介の選定と同じ（通算の記録の名前もこれ）
+        items.append((pinna_label(path), path))
     return items
 
 
@@ -164,45 +168,15 @@ class SoundBank:
     依存するため、方向手がかりとしては弱い。
     """
 
-    #: 遅らせた音を保持する数。1問で使うのは多くて3種類（問題の音と、
-    #: 基準音・問題の音それぞれの床の反射）、1回のテストでも十数種類なので
-    #: 十分足りる。上限が無いと、遅れの種類だけ1〜2秒ぶんの音が増え続ける。
-    VARIANT_CACHE_MAX = 64
-
     def __init__(self, sample_rate: int) -> None:
         self.sample_rate = sample_rate
         self._cache: dict[str, np.ndarray] = {}
-        self._variants: OrderedDict[tuple, np.ndarray] = OrderedDict()
 
     def get(self, kind: str) -> np.ndarray:
+        """その種類の音。遅らせるときは、この音のまま play(delay_s=) で遅らせる。"""
         if kind not in self._cache:
             self._cache[kind] = self._make(kind)
         return self._cache[kind]
-
-    def variant(self, kind: str, delay_s: float = 0.0) -> np.ndarray:
-        """遅らせた音。
-
-        遅らせるのは、基準音のあとの出題音と、床の反射音のため。2つの音を
-        別々の音源として同時に再生し、後の方を無音で遅らせる。タイマーで
-        後から鳴らすと、その間に回答や中止が入ったときの取り消しが要る。
-        同時に始めれば、止めるときも一緒に止まる。
-
-        作ったものは最近使った順に VARIANT_CACHE_MAX 個まで保持する。
-        """
-        pad_n = int(round(delay_s * self.sample_rate))
-        if pad_n == 0:
-            return self.get(kind)
-        key = (kind, pad_n)
-        data = self._variants.get(key)
-        if data is not None:
-            self._variants.move_to_end(key)
-            return data
-        data = np.concatenate([np.zeros(pad_n, dtype=np.float32),
-                               self.get(kind)])
-        self._variants[key] = data
-        while len(self._variants) > self.VARIANT_CACHE_MAX:
-            self._variants.popitem(last=False)
-        return data
 
     def _make(self, kind: str) -> np.ndarray:
         sr = self.sample_rate
@@ -371,6 +345,8 @@ Page Down  15度ずつ下を向く (真下の90度まで)
 ■ 注意
 ヘッドホンでの使用を前提としています。
 スピーカーでは左右の音が混ざるため定位しません。
+ヘッドホンを抜くなどで音の出力が止まると、読み上げで知らせ、
+自動でつなぎ直します。問題の途中なら F4 で聞き直せます。
 """
 
 # 英語の説明。見出しは「■」ではなく、行末のコロンで表す（記号を読み上げで
@@ -511,6 +487,9 @@ the measured range (down to 45 degrees), and it will not sound right.
 Note:
 This tool is meant for headphones.
 With speakers, left and right mix, so the directions cannot be heard.
+If the sound output stops, for example when headphones are
+unplugged, the tool says so and reconnects by itself.
+If a question was playing, F4 plays it again.
 """
 
 HELP_TEXT = HELP_TEXT_JA if is_japanese() else HELP_TEXT_EN
@@ -583,11 +562,15 @@ class HelpDialog(wx.Dialog):
 class MainFrame(wx.Frame):
     """設定と4つのモードを持つ1画面構成。"""
 
-    def __init__(self, preset_path: Path | None = None) -> None:
+    def __init__(self, preset_path: Path | None = None,
+                 settings_path: Path | None = None) -> None:
         super().__init__(None, title=APP_TITLE, size=(820, 680))
         # 自分で作った空間と残響（設定欄のボタンから作る）。テストは別の
         # 場所を渡す（利用者のファイルを書き換えないように）
         self.user_presets = UserPresetStore(preset_path or USER_PRESETS_PATH)
+        # 設定欄の選択（次の起動に引き継ぐ）。テストは別の場所を渡す
+        self.app_settings = AppSettingsStore(settings_path or APP_SETTINGS_PATH)
+        self._settings_warned = False
         self._space_editor: SpaceEditor | None = None
         self._reverb_editor: ReverbEditor | None = None
         self.speech = Speech()
@@ -636,7 +619,7 @@ class MainFrame(wx.Frame):
         self._begin_gen = 0
         # 答えた直後（次の問題が鳴るまで）の印。この間の F4 は受け付けない
         self._pending_next = False
-        self.records = RecordStore()
+        self.records = RecordStore(LOG_DIR / "pinna_records.json")
         # 上下用の耳介の通算成績。前後用とは別のファイルに積み上げる
         # （前後に合う耳介と上下に合う耳介は同じとは限らない）
         self.records_elev = RecordStore(LOG_DIR / "pinna_records_elev.json",
@@ -648,6 +631,10 @@ class MainFrame(wx.Frame):
         self.repeat_enabled = True
         self._repeat_timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.on_repeat, self._repeat_timer)
+        # 出力デバイスの見張り（音声を用意したときに始める）
+        self._device_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, lambda e: self.check_output(),
+                  self._device_timer)
 
         self.panel = wx.Panel(self)
         self.panel.SetName(tr("メイン", "Main"))
@@ -864,13 +851,21 @@ class MainFrame(wx.Frame):
         self.spn_depth.Bind(wx.EVT_TEXT, self.on_setting_changed)
         self.spn_tilt.Bind(wx.EVT_SPINCTRL, self.on_setting_changed)
         self.spn_tilt.Bind(wx.EVT_TEXT, self.on_setting_changed)
+        # 音の種類と難易度は次に鳴らす音・始めるモードから効く。引き継ぐ
+        # ために保存だけする
+        self.cmb_sound.Bind(wx.EVT_CHOICE, self.on_saved_choice)
+        self.cmb_diff.Bind(wx.EVT_CHOICE, self.on_saved_choice)
         # 床の反射は鳴らす音を遅らせて足すので、次に鳴らす音から効く
         self.txt_log.SetFocus()
+        # 前回の設定欄の選択を当てはめる（起動時の状態を利用者が決めたものは除く）
+        restored = self._restore_settings()
         # 自分で作った空間と残響のファイルが読めなかったときは、説明の前に書く
         # （黙って空にすると、作ったものが消えたように見える）
         warning = "\n".join(w for w in (self.user_presets.load_error,
+                                        self.app_settings.load_error,
                                         self.records.load_error,
-                                        self.records_elev.load_error) if w)
+                                        self.records_elev.load_error,
+                                        restored) if w)
         self.txt_log.SetValue((warning + "\n\n" if warning else "") + HELP_TEXT)
 
     def log(self, text: str, speak: bool = True) -> None:
@@ -1015,11 +1010,114 @@ class MainFrame(wx.Frame):
                 self._applied_room = room_state
         else:
             self._applied_room = "unset"     # 残響は空間が持っている
-        key = self.wobble_keys[max(0, self.cmb_wobble.GetSelection())]
-        engine.set_head_wobble(WOBBLE_PRESETS[key])
+        engine.set_head_wobble(WOBBLE_PRESETS[self._wobble_key_now()])
         engine.set_roll_wobble(ROLL_PRESETS[self._roll_key()])
         engine.set_listener((0.0, 0.0, 0.0), yaw_deg=self._yaw,
                             pitch_deg=self._pitch)
+
+    # -- 設定の引き継ぎ ---------------------------------------------------
+    def settings_values(self) -> dict:
+        """設定欄の選択を、保存する形（並び順でなく中身の名前）で返す。"""
+        _, path = self.current_hrtf()
+        room = self.room_keys[max(0, self.cmb_room.GetSelection())]
+        space = self.space_keys[max(0, self.cmb_space.GetSelection())]
+        return {
+            "hrtf": path.name if path is not None else "synthetic",
+            "sound": self._sound_kind(),
+            "wobble": self.wobble_keys[max(0, self.cmb_wobble.GetSelection())],
+            "reverb": list(room) if room is not None else None,
+            "space": list(space) if isinstance(space, tuple) else space,
+            "furnish": self.furnish_keys[
+                max(0, self.cmb_furnish.GetSelection())],
+            "people": int(self.spn_people.GetValue()),
+            "precise": bool(self.chk_precise.GetValue()),
+            "difficulty": self.difficulties[
+                max(0, self.cmb_diff.GetSelection())].name,
+            "front_back": int(self.spn_depth.GetValue()),
+        }
+
+    def _restore_settings(self) -> str:
+        """保存した設定欄の選択を当てはめ、起動時の案内の文を返す。
+
+        首かしげ・上下の強調・床の反射（起動時はオフ）と、繰り返し再生・
+        基準音（起動時はオン）は、利用者が起動時の状態を決めたので保存も
+        当てはめもしない。見つからない値（消した耳介のファイル、消した自分の
+        残響など）は起動時の状態のままにして、文に書く。
+        """
+        saved = self.app_settings.values
+        if not saved:
+            return ""
+        unusable: list[str] = []
+
+        def as_key(value):
+            return tuple(value) if isinstance(value, list) else value
+
+        def pick(key: str, keys: list, ctrl: wx.Choice, name: str) -> None:
+            if key not in saved:
+                return
+            try:
+                ctrl.SetSelection(keys.index(as_key(saved[key])))
+            except (ValueError, TypeError):
+                unusable.append(name)
+
+        pick("hrtf", ["synthetic" if path is None else path.name
+                      for _, path in self.hrtf_choices],
+             self.cmb_hrtf, "HRTF")
+        pick("sound", [k for _, k in SOUND_KINDS], self.cmb_sound,
+             tr("音の種類", "sound type"))
+        pick("wobble", self.wobble_keys, self.cmb_wobble,
+             tr("首振り", "head wobble"))
+        pick("reverb", self.room_keys, self.cmb_room, tr("残響", "reverb"))
+        pick("space", self.space_keys, self.cmb_space, tr("空間", "space"))
+        pick("furnish", self.furnish_keys, self.cmb_furnish,
+             tr("家具の量", "furniture amount"))
+        pick("difficulty", [d.name for d in self.difficulties],
+             self.cmb_diff, tr("難易度", "difficulty"))
+        for key, ctrl, low, high, name in (
+                ("people", self.spn_people, 0, 200, tr("人の数",
+                                                       "number of people")),
+                ("front_back", self.spn_depth, 0, 90,
+                 tr("前後の強調", "front/back emphasis"))):
+            if key not in saved:
+                continue
+            value = saved[key]
+            if (isinstance(value, int) and not isinstance(value, bool)
+                    and low <= value <= high):
+                ctrl.SetValue(value)
+            else:
+                unusable.append(name)
+        if "precise" in saved:
+            if isinstance(saved["precise"], bool):
+                self.chk_precise.SetValue(saved["precise"])
+            else:
+                unusable.append(tr("精密な残響", "precise reverb"))
+        text = tr("前回の設定を読み込みました（F9 で読み上げます）。首かしげ・"
+                  "上下の強調・床の反射は、いつもどおりオフで始めます。",
+                  "Loaded the settings from last time (F9 reads them). Head "
+                  "tilt, up/down emphasis and floor reflection start off, "
+                  "as usual.")
+        if unusable:
+            text += tr("保存した設定のうち、見つからないか使えないもの: "
+                       + list_sep().join(unusable) + "（いつもの状態にしました）。",
+                       " Not found or not usable in the saved settings: "
+                       + list_sep().join(unusable)
+                       + " (left as usual).")
+        return text
+
+    def save_settings(self, warn: bool = True) -> None:
+        """設定欄の選択を保存する（変わっていなければ書かない）。"""
+        try:
+            self.app_settings.save(self.settings_values())
+        except OSError as exc:
+            # 毎回言うと設定を動かすたびに読み上げが割り込むので、1回だけ
+            if warn and not self._settings_warned:
+                self._settings_warned = True
+                self.speech.warn(tr(f"設定を保存できませんでした。{exc}",
+                                    f"Could not save the settings. {exc}"))
+
+    def on_saved_choice(self, event: wx.CommandEvent) -> None:
+        self.save_settings()
+        event.Skip()
 
     # -- 自分で作る空間と残響 -------------------------------------------
     def refresh_user_choices(self, room_key=None, space_key=None) -> None:
@@ -1169,6 +1267,21 @@ class MainFrame(wx.Frame):
     def _roll_key(self) -> str:
         return self.roll_keys[max(0, self.cmb_roll.GetSelection())]
 
+    def _wobble_key_now(self) -> str:
+        """いま使う首振り（WOBBLE_PRESETS のキー）。
+
+        首振りの効果測定の途中は、問題ごとの条件（ありか、なしか）。設定欄を
+        動かすたびに設定欄の値へ戻すと、「なし」の問題が首振りありで鳴り、
+        集計は「なし」のまま残ってしまう。それ以外は設定欄の値。
+        """
+        session = self.session
+        if (self.mode == "ab" and isinstance(session, ABWobbleSession)
+                and not session.finished):
+            if session.wobble_enabled_for(session.current()):
+                return self._ab_wobble_key
+            return "off"
+        return self.wobble_keys[max(0, self.cmb_wobble.GetSelection())]
+
     def on_hrtf_changed(self, event: wx.CommandEvent) -> None:
         label, path = self.current_hrtf()
         if self.player is None:
@@ -1194,10 +1307,12 @@ class MainFrame(wx.Frame):
             except Exception as exc:  # noqa: BLE001
                 self.speech.error(tr(f"HRTF を読み込めません。{exc}",
                                      f"Cannot load the HRTF. {exc}"))
+        self.save_settings()
         event.Skip()
 
     def on_setting_changed(self, event: wx.CommandEvent) -> None:
         self.apply_settings()
+        self.save_settings()
         event.Skip()
 
     # -- 音声エンジン --------------------------------------------------
@@ -1215,14 +1330,23 @@ class MainFrame(wx.Frame):
                 else HrirSet.synthetic(sample_rate=rate))
         return self._hrir_cache[key]
 
-    def ensure_player(self) -> bool:
+    def ensure_player(self, yield_ui: bool = True) -> bool:
+        """音声を用意する（無ければ作る）。用意できたら True。
+
+        `yield_ui` は、読み込みの前に画面の処理を進めて「読み込んでいます」を
+        表示させるか。出力デバイスの見張り（タイマーの処理の中）から作り直す
+        ときは False にする。イベントの処理の中で画面の処理を進めると、
+        同じ処理が入れ子で動いたり、消えた窓の処理が走ったりして落ちうる
+        （テストで実際に落ちた）。
+        """
         if self.player is not None:
             return True
         label, sofa = self.current_hrtf()
         try:
             self.log(tr(f"{label} を読み込んでいます。少し待ってください。",
                         f"Loading {label}. Please wait a moment."))
-            wx.SafeYield()
+            if yield_ui:
+                wx.SafeYield()
             # sofa_path=None は open() では「既定（実測アセット）を使う」の
             # 意味になる。合成HRIRを選んだときは明示的に渡さないと、
             # 「合成」と表示しながら実測で鳴らしてしまう。
@@ -1232,6 +1356,7 @@ class MainFrame(wx.Frame):
                 reverb=None)
             self.bank = SoundBank(self.player.engine.sample_rate)
             self.apply_settings()
+            self._device_timer.Start(DEVICE_CHECK_MS)
             hrir = self.player.engine.hrir
             # 無音モード（AUDIOSPACE_SILENT=1）ではデバイスを選ばないので
             # choice が None になる。ここで落ちるとテストでアプリを開けない。
@@ -1252,6 +1377,83 @@ class MainFrame(wx.Frame):
                                      f"[Error] Starting the audio failed.\n"
                                      f"{exc}"))
             return False
+
+    # -- 出力デバイスの見張り ----------------------------------------------
+    def check_output(self) -> None:
+        """出力デバイスが失われていないか調べ、失われたらつなぎ直す。
+
+        ヘッドホンを抜く、Windows の既定の機器が変わる、などで出力は黙って
+        止まる。聴き取りの途中で起きると「聞こえない問題」として成績に残る
+        ので、1秒ごとにライブラリの `poll_device` を呼ぶ。つなぎ直しと、
+        失敗したときに間を空けて試し続けるのはライブラリが受け持ち、ここでは
+        知らせを読み上げる。レートの違う機器に替わったら作り直す。
+        画面のタイマーから呼ぶので、つなぎ直しは画面のスレッドで動く
+        （別のスレッドで見張る `watch_device` は使わない）。
+        """
+        player = self.player
+        if player is None:
+            return
+        event = player.poll_device()
+        if event is None:
+            return
+        if event.kind == DEVICE_RATE_CHANGED:
+            self._rebuild_player(event.detail)
+        elif event.kind == DEVICE_LOST:
+            self._stop_repeat()
+            self.log(tr(f"出力デバイスが失われました（{event.detail}）。"
+                        "ヘッドホンなどをつなぐと、自動でつなぎ直します。",
+                        f"The output device was lost ({event.detail}). "
+                        "Connect headphones or another device, and it will "
+                        "reconnect by itself."))
+        elif event.kind == DEVICE_RESTORED:
+            device = event.detail + tr("。", ".") if event.detail else ""
+            self.log(join_sentences(
+                tr("出力デバイスが失われたので、つなぎ直しました。",
+                   "The output device was lost, so it was reconnected."),
+                device, self._replay_hint()))
+            self._arm_repeat()
+
+    def _replay_hint(self) -> str:
+        """出題の途中なら、F4 で聞き直せることを添える。"""
+        if self._waiting_for_answer():
+            return tr("F4 で問題をもう一度聞けます。",
+                      "F4 plays the question again.")
+        return ""
+
+    def _rebuild_player(self, reason: str) -> None:
+        """出力のサンプルレートが変わったので、プレイヤーを作り直す。
+
+        鳴っていた音は止まる（出題中なら繰り返し再生か F4 で鳴らし直せる）。
+        耳介の選定で候補の耳介を読み込んでいたら、それを読み込み直す。
+        """
+        old = self.player
+        self.stop_sound()
+        self._device_timer.Stop()
+        if old is not None:
+            try:
+                old.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self.player = None
+        self.bank = None
+        # 空間と残響は新しいエンジンに設定し直す
+        self._applied_space = (None, False)
+        self._applied_room = "unset"
+        active = self._active_tag
+        if not self.ensure_player(yield_ui=False):
+            return
+        if active is not None:
+            try:
+                self.player.engine.set_hrir(self.load_hrir(Path(active)))
+            except Exception as exc:  # noqa: BLE001
+                self.speech.error(tr(f"耳介を読み込み直せません。{exc}",
+                                     f"Cannot reload the pinna. {exc}"))
+        self.log(join_sentences(
+            tr(f"出力デバイスが替わったので、音声を作り直しました（{reason}）。",
+               f"The output device changed, so the audio was set up again "
+               f"({reason})."),
+            self._replay_hint()))
+        self._arm_repeat()
 
     def stop_sound(self) -> None:
         if self._orbit_timer is not None:
@@ -1291,30 +1493,36 @@ class MainFrame(wx.Frame):
         self.stop_sound()
         kind = self._sound_kind()
         lead = 0.0
-        if with_reference:
-            self._ref_handle = self._play_one(
-                kind, azimuth_deg, distance_m, 0.0, lead, loop=False)
-            lead = (len(self.bank.get(kind)) / self.bank.sample_rate
-                    + REFERENCE_GAP_S)
-        self._handle = self._play_one(kind, azimuth_deg, distance_m,
-                                      elevation_deg, lead, loop)
+        # 基準音・問題の音・床の反射を同じ時刻から数える。別々に play すると、
+        # 間に音声のブロックが入ったとき、後の音だけ1ブロック（約11ms）遅れ、
+        # 床の反射の遅れ（0.7〜17.5ms）が崩れる
+        with self.player.together():
+            if with_reference:
+                self._ref_handle = self._play_one(
+                    kind, azimuth_deg, distance_m, 0.0, lead, loop=False)
+                lead = (len(self.bank.get(kind)) / self.bank.sample_rate
+                        + REFERENCE_GAP_S)
+            self._handle = self._play_one(kind, azimuth_deg, distance_m,
+                                          elevation_deg, lead, loop)
 
     def _play_one(self, kind: str, azimuth_deg: float, distance_m: float,
                   elevation_deg: float, lead_s: float, loop: bool) -> int:
         """1つの音（と、床の反射が有効ならその反射音）を鳴らす。
 
         返すのは直接音の音源。反射音は _extra_handles に積み、
-        stop_sound() で一緒に止める。
+        stop_sound() で一緒に止める。遅らせるのはエンジン（delay_s）。
+        タイマーで後から鳴らすと、その間の回答や中止で取り消しが要るが、
+        同時に足して遅らせれば、止めるときも一緒に止まる。
         """
         position = position_for(azimuth_deg, distance_m, elevation_deg)
-        handle = self.player.play(
-            self.bank.variant(kind, delay_s=lead_s),
-            position=position, loop=loop, reverb_send=0.3)
+        sound = self.bank.get(kind)
+        handle = self.player.play(sound, position=position, loop=loop,
+                                  reverb_send=0.3, delay_s=lead_s)
         if self.chk_floor.GetValue() and not loop:
             image, delay = floor_image(position)
             if image is not None:
                 self._extra_handles.append(self.player.play(
-                    self.bank.variant(kind, delay_s=lead_s + delay),
+                    sound, delay_s=lead_s + delay,
                     position=image, gain=FLOOR_REFLECTION_GAIN,
                     # 残響は直接音の分だけで足りる。反射音にも送ると
                     # 残響が二重になる
@@ -1692,8 +1900,10 @@ class MainFrame(wx.Frame):
             return
         self._stop_repeat()
         self.stop_sound()
-        self.apply_settings()
+        # 前のモードの出題を先に外す（首振りの効果測定の途中から移ったとき、
+        # apply_settings がその問題の条件の首振りを設定しないように）
         self.session = None
+        self.apply_settings()
         self.mode = "listen"
         self._accepting = False
         self._begin_gen += 1        # 直前に始めたモードの遅延出題を無効にする
@@ -1732,8 +1942,10 @@ class MainFrame(wx.Frame):
         self._stop_repeat()
         self.stop_sound()
         self._restore_selected_hrir()
-        self.apply_settings()
+        # 前のモードの出題を先に外す（首振りの効果測定の途中から移ったとき、
+        # apply_settings がその問題の条件の首振りを設定しないように）
         self.session = None
+        self.apply_settings()
         self.mode = "listen8"
         self._accepting = False
         self._begin_gen += 1        # 直前に始めたモードの遅延出題を無効にする
@@ -1770,8 +1982,10 @@ class MainFrame(wx.Frame):
         if not self.ensure_player():
             return
         self._restore_selected_hrir()
-        self.apply_settings()
+        # 前のモードの出題を先に外す（首振りの効果測定の途中から移ったとき、
+        # apply_settings がその問題の条件の首振りを設定しないように）
         self.session = None
+        self.apply_settings()
         self._begin_gen += 1        # 直前のモードの遅延出題を無効にする
         self.mode = "orbit"
         self._orbit_angle = 0.0
@@ -1825,6 +2039,9 @@ class MainFrame(wx.Frame):
         self._stop_repeat()
         self.stop_sound()
         self._restore_selected_hrir()
+        # 前のモードの出題を先に外す（首振りの効果測定の途中から移ったとき、
+        # apply_settings がその問題の条件の首振りを設定しないように）
+        self.session = None
         self.apply_settings()
         self.mode = mode
         self.session = session
@@ -2191,9 +2408,8 @@ class MainFrame(wx.Frame):
                 self._switch_pinna()
                 return
         if isinstance(self.session, ABWobbleSession):
-            key = (self._ab_wobble_key
-                   if self.session.wobble_enabled_for(trial) else "off")
-            self.player.engine.set_head_wobble(WOBBLE_PRESETS[key])
+            self.player.engine.set_head_wobble(
+                WOBBLE_PRESETS[self._wobble_key_now()])
         self.SetStatusText(self._progress_text())
         self._play_trial(trial)
         self._accepting = True
@@ -2222,6 +2438,9 @@ class MainFrame(wx.Frame):
                                  "try again, or Escape to quit."))
             return
         self._active_tag = session.current_tag
+        # 案内を読み終えてから出題する。この待ちの間の F4 は受け付けない
+        # （案内にかぶって鳴り、まだ聞いていない問題の聞き直しに数えられる）
+        self._pending_next = True
         self._later(1500, self._play_after_switch)
 
     def _play_after_switch(self) -> None:
@@ -2454,10 +2673,13 @@ class MainFrame(wx.Frame):
         return path, True
 
     def on_close(self, event: wx.CloseEvent) -> None:
+        # 設定欄の選択を次の起動に引き継ぐ（終わるときは読み上げない）
+        self.save_settings(warn=False)
         self._stop_repeat()
+        self._device_timer.Stop()
         self.stop_sound()
         if self.player is not None:
-            self.player.stop()
+            self.player.close()
             self.player = None
         self.speech.stop()
         event.Skip()

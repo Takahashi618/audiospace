@@ -1,9 +1,10 @@
 # audiospace のパッケージ定義。
 #
-# 既定 HRTF（audiospace/data/default_horizontal.npz、約205KB、CC BY 4.0 の
-# 表示義務あり — ATTRIBUTION.md 参照）はパッケージデータとして wheel に
-# 入る。assets/（Viking の SOFA 21種 61MB と焼き込み残響 IR）はリポジトリ
-# 運用専用で、配布物には含めない。
+# 既定 HRTF（audiospace/data/default_horizontal.npz、約205KB）と全天球
+# （default_sphere.npz、約1.4MB）は CC BY 4.0 の表示義務あり（ATTRIBUTION.md
+# 参照）で、パッケージデータとして wheel に入る。assets/（Viking の SOFA 21種 61MB と
+# 焼き込み残響 IR）は wheel には入らず、zip には入る。耳介の選定
+# （audiospace.pinna）を使うゲームは、assets/hrtf/viking をゲームと一緒に配る。
 #
 #   python -m pip install -e .            開発中はこれ
 #   python -m pip install -e .[full]      任意依存もまとめて
@@ -16,7 +17,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audiospace"
-version = "0.7.1"
+version = "0.8.0"
 description = "視覚障害者向けゲーム・ツールのためのバイノーラル3D音響ライブラリ（OpenAL 非依存）"
 readme = "README.md"
 requires-python = ">=3.10"

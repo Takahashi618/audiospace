@@ -13,6 +13,7 @@ import math
 import os
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -600,8 +601,8 @@ def t_early_reflection() -> str:
         "west": "rough_concrete", "east": "open", "south": "open",
         "north": "open"}, ceiling="open", at=(0.2, 0.5))
     click = np.zeros(SR // 2, dtype=np.float32)
-    # not at sample 0: a new source fades in over its first block, which
-    # would silence a click there (and with it the reflection)
+    # not at sample 0: until 2026-11-18 a new source faded in over its
+    # first block, which silenced a click there (the position is kept)
     click[BLOCK + 100] = 1.0
 
     def run(space) -> np.ndarray:
@@ -1700,21 +1701,34 @@ def t_fade_out() -> str:
             "slot auto-released")
 
 
-@test("engine: flat (UI) sources ramp in instead of stepping")
+@test("engine: flat (UI) sources start as their data, and ramp gain changes")
 def t_flat_ramp() -> str:
+    # 2026-11-18 まで、新しい音は最初の1ブロックを 0 からフェードインして
+    # いた。先頭の1サンプルだけのクリックが消えるので、鳴り始めはデータの
+    # とおりにした。音量の変化・再開は今までどおりブロックの中でランプする
     engine = make_engine()
-    engine.add_source(BufferSource(np.full(SR, 0.5, dtype=np.float32),
-                                   loop=True),
-                      spatialise=False, reverb_send=0.0)
+    h = engine.add_source(BufferSource(np.full(SR, 0.5, dtype=np.float32),
+                                       loop=True),
+                          spatialise=False, reverb_send=0.0)
     first = engine.render()
-    second = engine.render()
     steady = 0.5 * engine.master_gain
-    assert abs(first[0, 0]) < 0.02, \
-        f"UI sound starts with a step: first sample {first[0, 0]:.3f}"
-    assert abs(second[0, 0] - steady) < 0.02, \
-        f"did not reach steady level: {second[0, 0]:.3f} vs {steady:.3f}"
-    return (f"first sample {first[0, 0]:.4f} -> steady {second[0, 0]:.4f} "
-            f"(target {steady:.4f})")
+    assert abs(first[0, 0] - steady) < 1e-6, \
+        f"UI sound faded in: first sample {first[0, 0]:.4f} vs {steady:.4f}"
+    engine.set_source_gain(h, 0.0)
+    down = engine.render()[:, 0]
+    assert abs(down[0] - steady) < 0.02 and abs(down[-1]) < 0.02, \
+        f"gain change stepped: {down[0]:.3f} -> {down[-1]:.3f}"
+    assert np.all(np.diff(down) <= 1e-7), "gain ramp is not monotonic"
+    engine.set_source_gain(h, 1.0)
+    engine.render()
+    engine.set_source_active(h, False)
+    engine.set_source_active(h, True)
+    resumed = engine.render()[:, 0]
+    assert abs(resumed[0]) < 0.02, \
+        f"resume starts with a step: first sample {resumed[0]:.3f}"
+    return (f"first sample {first[0, 0]:.4f} (target {steady:.4f}); gain to 0 "
+            f"ramps {down[0]:.4f} -> {down[-1]:.4f}; resume starts at "
+            f"{resumed[0]:.4f}")
 
 
 @test("engine: pause freezes everything and resume continues in place")
@@ -1864,25 +1878,39 @@ def t_restart_silent() -> str:
     return f"restarted; callbacks {seen} -> {player.callbacks}"
 
 
-@test("player: a crashing source cannot kill the audio loop")
+@test("player: a crashing source or render cannot kill the audio loop")
 def t_callback_error_guard() -> str:
     player = SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None)
     try:
         def boom(n: int) -> np.ndarray:
             raise RuntimeError("wired to fail")
 
+        # 壊れた音源は、その音源だけが外れて数えられる
         player.play(CallbackSource(boom))
-        assert wait_until(lambda: player.render_errors > 0), \
-            "error was never recorded"
-        seen = player.callbacks
-        assert wait_until(lambda: player.callbacks > seen + 3), \
-            "the loop died after the exception"
+        assert wait_until(lambda: player.engine.source_errors > 0), \
+            "the source error was never recorded"
+        assert wait_until(lambda: player.engine.active_sources == 0), \
+            "the broken source was not removed"
+        assert "RuntimeError" in player.engine.last_source_error
+        assert "音源の異常で外した音" in player.status(), player.status()
+        # render そのものの例外は、ループが受け止めて数える
+        real = player.engine.render
+        player.engine.render = lambda: (_ for _ in ()).throw(
+            RuntimeError("render wired to fail"))
+        try:
+            assert wait_until(lambda: player.render_errors > 0), \
+                "error was never recorded"
+            seen = player.callbacks
+            assert wait_until(lambda: player.callbacks > seen + 3), \
+                "the loop died after the exception"
+        finally:
+            player.engine.render = real
         assert "RuntimeError" in player.last_error
         assert "レンダリングエラー" in player.status()
     finally:
         player.stop()
-    return (f"loop survived {player.render_errors} errors, "
-            f"status reports: {player.last_error}")
+    return (f"source removed ({player.engine.last_source_error}); loop "
+            f"survived {player.render_errors} render errors")
 
 
 # -- 遮蔽のこもり・音量の滑らかな変化・定位させない音 -----------------------------------------------
@@ -2334,8 +2362,10 @@ def t_cache_byte_cap() -> str:
     player.sound_cache_max_bytes = 1000          # デコード結果より小さく
     sources_mod._decode = counting
     try:
-        player.play(wav)
-        player.play(wav)
+        # 上限を超えるファイルは既定では少しずつ読む（2026-11-18）。ここでは
+        # 丸ごと読む道のキャッシュの上限を確かめるので stream=False
+        player.play(wav, stream=False)
+        player.play(wav, stream=False)
         assert calls["n"] == 2, f"上限超なのにキャッシュされました: {calls}"
         assert len(player._sound_cache) == 0
         player.sound_cache_max_bytes = 10 * 1024 * 1024
@@ -2406,7 +2436,10 @@ def t_reopen() -> str:
             raise AssertionError("レート違いが通ってしまいました")
         except RuntimeError as exc:
             assert "作り直して" in str(exc)
+            # 作り直しが要ることを、種類で見分けられる（RuntimeError の一種）
+            assert isinstance(exc, player_mod.DeviceRateError), type(exc)
         assert player.device_lost is True
+        assert "作り直して" in player.last_error, player.last_error
 
         # デバイス皆無: 例外でも device_lost と last_error が残る
         def none_found(*a, **k):
@@ -2660,7 +2693,7 @@ def t_space_contents_render() -> str:
         engine = make_engine()
         engine.set_space(space, transition_s=0.0)
         click = np.zeros(SR, dtype=np.float32)
-        click[2048] = 1.0      # 鳴り始めの1ブロックはフェードインで消える
+        click[2048] = 1.0      # 2026-11-18 までは先頭だとフェードインで消えた
         engine.add_source(BufferSource(click), position=(0.0, 2.0, 0.0),
                           reverb_send=0.3)
         out = engine.render_seconds(1.2)
@@ -2972,7 +3005,8 @@ def t_review2_distinct_lines() -> str:
         rev = BandFdnReverb(SR, [0.5] * 7, room_scale=scale, block=block)
         lens = [len(x) for x in rev._lines]
         assert len(set(lens)) == len(lens), lens
-        assert min(lens) > block
+        # 線の長さはブロックの大きさによらず、最短でも MIN_LINE
+        assert min(lens) >= BandFdnReverb.MIN_LINE, lens
     return "どの大きさでも8本とも別の長さ"
 
 
@@ -3016,6 +3050,1822 @@ def t_review2_exclusive_text() -> str:
     assert "排他" in direct.status(), direct.status()
     return "WASAPI の排他だけが排他と読まれる"
 
+
+
+@test("review3: どの空間にも入っていない所から空間へ入っても、つないで入る")
+def t_review3_enter_from_nowhere() -> str:
+    from audiospace import Space
+
+    def room():
+        return Space.room((5.0, 4.0, 2.7), floor="concrete_floor",
+                          walls="rough_concrete", ceiling="rough_concrete",
+                          listener=(0, 0, 0), at=(0.5, 0.5), name="room")
+
+    # 何も鳴らしていないうちの最初の空間は、つながずに全量（つなぐ元が無い）
+    fresh = make_engine()
+    fresh.set_space(room())
+    fresh.render()
+    assert (fresh._early_gain, fresh._reverb_in_gain) == (1.0, 1.0)
+
+    engine = make_engine()
+    engine.add_source(BufferSource(tone(220.0, 4.0), loop=True),
+                      position=(0.0, 0.5, 0.0), relative=True)
+    engine.set_listener((0.0, 10.0, 0.0))
+    engine.set_spaces([room()])
+    for _ in range(20):
+        engine.render()
+    assert engine.space is None
+    engine.set_listener((0.0, 1.0, 0.0))
+    engine.render()
+    entered = (engine._reverb_in_gain, engine._early_gain)
+    assert max(entered) < 0.2, ("入った瞬間に全量で鳴った", entered)
+
+    # 出て、消え終わる前に戻っても、前の反射はその場で切れない
+    for _ in range(40):
+        engine.render()
+    engine.set_listener((0.0, 10.0, 0.0))
+    for _ in range(5):
+        engine.render()
+    left = engine._old_early_gain
+    assert engine._old_early is not None and 0.0 < left < 1.0, left
+    engine.set_listener((0.0, 1.0, 0.0))
+    engine.render()
+    assert engine._old_early is not None, "戻った瞬間に前の反射が切れた"
+    assert engine._old_early_gain < left
+    return (f"入った直後の倍率 残響 {entered[0]:.3f}・反射 {entered[1]:.3f}。"
+            f"戻ったとき、前の反射は {left:.2f} から消え続ける")
+
+
+@test("review3: 壊れた音源（例外・形の違う音）は、その音源だけが外れる")
+def t_review3_source_error_isolated() -> str:
+    calls = {"n": 0}
+
+    def bad(n):
+        calls["n"] += 1
+        if calls["n"] > 3:
+            raise RuntimeError("壊れた音源")
+        return np.zeros(n, np.float32)
+
+    class WrongShape:
+        channels = 1
+        finished = False
+
+        def read(self, n):
+            return np.zeros((n, 2), np.float32)
+
+    engine = make_engine()
+    engine.add_source(BufferSource(np.full(SR * 2, 0.1, np.float32),
+                                   loop=True), position=(0.0, 2.0, 0.0))
+    engine.add_source(CallbackSource(bad), position=(1.0, 2.0, 0.0))
+    engine.add_source(WrongShape(), position=(-1.0, 2.0, 0.0))
+    peaks = [float(np.max(np.abs(engine.render()))) for _ in range(50)]
+    assert engine.source_errors == 2, engine.source_errors
+    assert engine.active_sources == 1, engine.active_sources
+    assert min(peaks[5:]) > 0.0, "正常な音まで無音になった"
+    assert "RuntimeError" in engine.last_source_error
+    return (f"外した音源 {engine.source_errors} 個、正常な音は50ブロックとも鳴る"
+            f"（最後の理由: {engine.last_source_error}）")
+
+
+@test("review3: 位置・音量・聞き手の NaN や無限大は、受け取るときに断る")
+def t_review3_reject_nonfinite() -> str:
+    engine = make_engine()
+    h = engine.add_source(BufferSource(np.full(SR * 2, 0.1, np.float32),
+                                       loop=True), position=(0.0, 2.0, 0.0))
+    nan, inf = float("nan"), float("inf")
+    one = np.zeros(10, np.float32)
+    calls = [
+        ("add_source の位置", lambda: engine.add_source(
+            BufferSource(one), position=(nan, 0.0, 0.0))),
+        ("add_source の音量", lambda: engine.add_source(
+            BufferSource(one), gain=inf)),
+        ("位置", lambda: engine.set_source_position(h, (nan, 0.0, 0.0))),
+        ("位置の数", lambda: engine.set_source_position(h, (1.0, 2.0))),
+        ("音量", lambda: engine.set_source_gain(h, nan)),
+        ("音量の dB", lambda: engine.set_source_gain_db(h, nan)),
+        ("こもり", lambda: engine.set_source_lowpass(h, nan)),
+        ("残響の送り", lambda: engine.set_source_reverb_send(h, nan)),
+        ("聞き手の位置", lambda: engine.set_listener(position=(0.0, nan, 0.0))),
+        ("聞き手の向き", lambda: engine.set_listener(yaw_deg=nan)),
+        ("瞬間移動", lambda: engine.teleport_listener((0.0, 0.0, inf))),
+    ]
+    for what, call in calls:
+        try:
+            call()
+        except ValueError:
+            continue
+        raise AssertionError(f"{what}の NaN が通ってしまった")
+    assert engine.get_source(h).position == (0.0, 2.0, 0.0)
+    peaks = [float(np.max(np.abs(engine.render()))) for _ in range(10)]
+    assert engine.nonfinite_blocks == 0 and min(peaks[2:]) > 0.0, peaks
+    assert engine.active_sources == 1
+    return f"{len(calls)} 通りとも ValueError。音は鳴り続ける"
+
+
+@test("review3: 速い版の残響は、ブロックの大きさによらず同じ音")
+def t_review3_band_reverb_block() -> str:
+    from audiospace import space_preset
+    from audiospace.reverb import band_reverb_for
+    lines = []
+    for name in ("tiled_bathroom", "concrete_room"):
+        sp = space_preset(name)
+        outs = {}
+        for block in (256, 512, 1024, 2048):
+            rev = band_reverb_for(sp, SR, block)
+            n = int(2.0 * SR / block) + 1
+            x = np.zeros(n * block, np.float32)
+            x[0] = 1.0
+            outs[block] = np.concatenate(
+                [rev.process(x[i * block:(i + 1) * block]) for i in range(n)])
+        length = min(len(y) for y in outs.values())
+        ref = outs[512][:length]
+        peak = float(np.max(np.abs(ref)))
+        worst = max(float(np.max(np.abs(y[:length] - ref)))
+                    for y in outs.values())
+        assert worst <= 1e-6 * peak, (name, worst, peak)
+        lines.append(f"{name}: 512 との差の最大 {worst:.1e}（ピーク {peak:.3f}）")
+    return "\n".join(lines)
+
+
+@test("review3: HRIR がブロックより長いとき、鳴り終わった音の行に新しい音を入れない")
+def t_review3_row_reuse() -> str:
+    def run(with_new: bool, max_sources: int = 4):
+        hr = HrirSet.synthetic(sample_rate=SR, taps=128)
+        e = SpatialEngine(hr, block=64, max_sources=max_sources,
+                          limiter=False)
+        click = np.zeros(64, np.float32)
+        click[10] = 0.8
+        e.add_source(BufferSource(click), position=(-2.0, 0.0, 0.0))
+        outs = [e.render()]
+        e.reap_finished()
+        if with_new:
+            e.add_source(BufferSource(np.zeros(640, np.float32)),
+                         position=(2.0, 0.0, 0.0))
+        outs += [e.render() for _ in range(4)]
+        return np.concatenate(outs), e
+
+    plain, eng = run(False)
+    with_new, _ = run(True)
+    assert eng._conv.nparts == 2, eng._conv.nparts
+    diff = float(np.max(np.abs(plain - with_new)))
+    assert diff == 0.0, ("無音の音を足しただけで前の音の尾が変わった", diff)
+    # 空いた行がどれも鳴り終わっていなければ、残りを捨ててから入る
+    hr = HrirSet.synthetic(sample_rate=SR, taps=128)
+    e = SpatialEngine(hr, block=64, max_sources=1, limiter=False)
+    click = np.zeros(64, np.float32)
+    click[10] = 0.8
+    e.add_source(BufferSource(click), position=(-2.0, 0.0, 0.0))
+    e.render()
+    e.reap_finished()
+    assert e._conv.row_sounding(0)
+    e.add_source(BufferSource(np.zeros(640, np.float32)),
+                 position=(2.0, 0.0, 0.0))
+    assert not e._conv.row_sounding(0), "前の音の残りが新しい音の行に残った"
+    return "前の音の尾は、無音の音を足しても1サンプルも変わらない"
+
+
+@test("review3: 読めない音声ファイルの誤りに、ファイルの名前と理由が入る")
+def t_review3_decode_error() -> str:
+    from audiospace import DecodeError
+    from audiospace.sources import load_mono
+    with tempfile.TemporaryDirectory() as tmp:
+        bad = Path(tmp) / "broken.wav"
+        bad.write_bytes(b"RIFF\x00\x00\x00\x00WAVEjunk")
+        messages = []
+        for without_miniaudio in (False, True):
+            saved = sys.modules.get("miniaudio")
+            if without_miniaudio:
+                sys.modules["miniaudio"] = None      # import が失敗する
+            try:
+                load_mono(bad)
+                raise AssertionError("壊れたファイルが読めてしまった")
+            except DecodeError as exc:
+                messages.append(str(exc))
+            finally:
+                if without_miniaudio:
+                    if saved is None:
+                        sys.modules.pop("miniaudio", None)
+                    else:
+                        sys.modules["miniaudio"] = saved
+        for msg in messages:
+            assert "broken.wav" in msg and "soundfile" in msg, msg
+        assert "miniaudio" in messages[1], messages[1]
+    return " / ".join(messages)
+
+
+@test("review3: コールバックのフレーム数がブロックと違うと、数えて状態に出す")
+def t_review3_block_mismatch() -> str:
+    player = SpatialPlayer(make_engine(), None)     # デバイスを開かない
+    out = np.ones((256, 2), np.float32)
+    player._callback(out, 256, None, None)
+    assert not out.any(), "無音にしていない"
+    assert (player.block_mismatches, player.last_mismatch_frames) == (1, 256)
+    text = player.status()
+    assert "食い違い" in text, text
+    player.reset_stats()
+    assert player.block_mismatches == 0
+    return text
+
+
+@test("review3: 英語の表示のとき、残響の設計図の誤りは「; 」で区切る")
+def t_review3_reverb_spec_sep() -> str:
+    import audiospace.reverb as reverb_mod
+    real = reverb_mod.tr
+    reverb_mod.tr = lambda ja, en: en
+    try:
+        reverb_mod.reverb_from_spec({"rt60": 99, "width": 5}, SR)
+        raise AssertionError("おかしな設計図が通ってしまった")
+    except ValueError as exc:
+        text = str(exc)
+    finally:
+        reverb_mod.tr = real
+    assert "; " in text and "、" not in text, text
+    return text
+
+
+@test("review3: table_bytes は畳み込み器が実際に持つ表の大きさと同じ")
+def t_review3_table_bytes() -> str:
+    lines = []
+    for taps in (128, 600):
+        h = HrirSet.synthetic(n_azimuth=8, taps=taps, sample_rate=SR)
+        conv = BinauralConvolver(h, block=BLOCK, max_sources=1)
+        assert h.table_bytes == conv._H.nbytes, (taps, h.table_bytes,
+                                                 conv._H.nbytes)
+        lines.append(f"{taps}タップ: {h.table_bytes} バイト")
+    return "、".join(lines)
+
+
+class _FakeDevices:
+    """出力デバイスの見張りのテスト用。機器の一覧とストリームを偽物にする。
+
+    デバイスは開かない（音は出ない）。`pick` で、つなぎ直しのときに選ばれる
+    機器と、機器が無い状態を決める。`opened` は開いた偽のストリーム。
+    """
+
+    class Stream:
+        def __init__(self) -> None:
+            self.active = True
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    def __init__(self) -> None:
+        from audiospace.device import DeviceChoice
+        self.good = DeviceChoice(0, "Fake USB", "WASAPI", SR, 10.0)
+        self.other = DeviceChoice(1, "Speakers", "WASAPI", SR + 3900, 10.0)
+        self.pick = {"choice": self.good, "fail": False}
+        self.opened: list = []
+
+    def __enter__(self) -> "_FakeDevices":
+        import sounddevice as sd
+
+        import audiospace.player as player_mod
+        self._mods = (sd, player_mod)
+        self._real = (sd._terminate, sd._initialize,
+                      player_mod.choose_output, player_mod.open_output_stream)
+        sd._terminate = lambda: None
+        sd._initialize = lambda: None
+
+        def choose(*a, **k):
+            if self.pick["fail"]:
+                raise RuntimeError("no stereo output device found")
+            return self.pick["choice"]
+
+        def open_stream(*a, **k):
+            stream = self.Stream()
+            self.opened.append(stream)
+            return stream
+
+        player_mod.choose_output = choose
+        player_mod.open_output_stream = open_stream
+        return self
+
+    def __exit__(self, *exc) -> None:
+        sd, player_mod = self._mods
+        (sd._terminate, sd._initialize, player_mod.choose_output,
+         player_mod.open_output_stream) = self._real
+
+
+@test("見張り: poll_device は失われた機器をつなぎ直し、変わったときだけ知らせる")
+def t_device_poll() -> str:
+    from audiospace import DEVICE_LOST, DEVICE_RATE_CHANGED, DEVICE_RESTORED
+
+    silent = SpatialPlayer(make_engine(), None)
+    assert silent.poll_device() is None, "無音モードで知らせた"
+    with _FakeDevices() as dev:
+        player = SpatialPlayer(make_engine(), dev.good)   # 実機を模す
+        try:
+            player.start()
+            assert player.poll_device() is None, "健全なのに知らせた"
+
+            dev.opened[-1].active = False                 # 抜いた → 戻った
+            ev = player.poll_device()
+            assert ev is not None and ev.kind == DEVICE_RESTORED, ev
+            assert "Fake USB" in ev.detail and ev.message, ev
+            assert len(dev.opened) == 2 and not player.device_lost
+
+            dev.opened[-1].active = False                 # 抜いたまま
+            dev.pick["fail"] = True
+            ev = player.poll_device()
+            assert ev is not None and ev.kind == DEVICE_LOST, ev
+            assert player.poll_device() is None, "試し直す前に知らせた"
+            player._retry_at = 0.0
+            assert player.poll_device() is None, "失敗を2回知らせた"
+
+            dev.pick.update(fail=False, choice=dev.other)  # レートの違う機器
+            player._retry_at = 0.0
+            ev = player.poll_device()
+            assert ev is not None and ev.kind == DEVICE_RATE_CHANGED, ev
+            player._retry_at = 0.0
+            assert player.poll_device() is None, "レート違いを2回知らせた"
+
+            dev.pick["choice"] = dev.good                 # 元の機器が戻った
+            player._retry_at = 0.0
+            ev = player.poll_device()
+            assert ev is not None and ev.kind == DEVICE_RESTORED, ev
+            assert player.poll_device() is None
+        finally:
+            player.stop()
+    return f"戻った、失われた（1回だけ）、レート違い、戻った の順に知らせた: {ev.message}"
+
+
+@test("見張り: watch_device は別のスレッドでつなぎ直し、stop で止まる")
+def t_device_watch() -> str:
+    from audiospace import DEVICE_LOST, DEVICE_RESTORED
+
+    silent = SpatialPlayer(make_engine(), None)
+    silent.watch_device(lambda e: None)
+    assert not silent.watching_device, "無音モードで見張りを始めた"
+    events: list = []
+
+    def on_event(event) -> None:
+        events.append(event)
+        raise RuntimeError("呼び出し側の誤り")   # 見張りは止まらないはず
+
+    with _FakeDevices() as dev:
+        player = SpatialPlayer(make_engine(), dev.good)
+        try:
+            player.start()
+            player.watch_device(on_event, interval_s=0.02)
+            assert player.watching_device
+            dev.opened[-1].active = False
+            assert wait_until(lambda: len(events) >= 1), "戻ったことを知らせない"
+            assert events[0].kind == DEVICE_RESTORED, events[0]
+            dev.pick["fail"] = True
+            dev.opened[-1].active = False
+            assert wait_until(lambda: len(events) >= 2), \
+                "on_event の例外の後に見張りが止まった"
+            assert events[1].kind == DEVICE_LOST, events[1]
+            text = player.status()
+            assert "自動でつなぎ直し" in text, text
+            dev.pick["fail"] = False
+            player._retry_at = 0.0
+            assert wait_until(lambda: len(events) >= 3), "戻らない"
+            assert events[2].kind == DEVICE_RESTORED
+        finally:
+            player.stop()
+        assert not player.watching_device, "stop の後も見張っている"
+    return f"知らせ {len(events)} 回、状態の文: {text[:40]}…"
+
+
+@test("既定 HRTF: 全天球は耳介E の測定値そのままで、4つの高さがある")
+def t_default_sphere() -> str:
+    from audiospace import attribution, default_hrir
+    from audiospace import defaults as defaults_mod
+    sphere = default_hrir(SR, full_sphere=True)
+    flat = default_hrir(SR)
+    assert sphere.n_directions == 1513, sphere.n_directions
+    assert flat.n_directions == 216, "水平面の既定が変わった"
+    assert float(sphere.elevation.min()) <= -44.9
+    assert float(sphere.elevation.max()) >= 89.9
+    for level in (90.0, 45.0, 0.0, -45.0):
+        assert float(np.min(np.abs(sphere.elevation - level))) < 1e-6, level
+    sofa = (Path(__file__).resolve().parents[1] / "assets" / "hrtf" / "viking"
+            / "subj_E.sofa")
+    same = "SOFA が無いので比べない"
+    if sofa.exists():
+        ref = HrirSet.from_sofa(sofa, sample_rate=SR)
+        assert np.array_equal(sphere.data, ref.data), "測定値が SOFA と違う"
+        assert np.array_equal(sphere.elevation, ref.elevation)
+        same = "SOFA の耳介E と値が同じ"
+    assert default_hrir(44100, full_sphere=True).sample_rate == 44100
+    text = attribution(full_sphere=True)
+    assert "unchanged" in text and "horizontal" not in text, text
+    assert "horizontal" in attribution(), "水平面の文面が変わった"
+    # 全天球が無いときは、水平面や合成に黙って替えない
+    real = defaults_mod.DEFAULT_SPHERE_ASSET
+    defaults_mod.DEFAULT_SPHERE_ASSET = real.with_name("missing_sphere.npz")
+    try:
+        default_hrir(SR, full_sphere=True)
+        raise AssertionError("無いのに読めてしまった")
+    except FileNotFoundError:
+        pass
+    finally:
+        defaults_mod.DEFAULT_SPHERE_ASSET = real
+    return (f"{sphere.n_directions}方向、仰角 {sphere.elevation.min():.0f}〜"
+            f"{sphere.elevation.max():.0f}度、{same}。"
+            f"表 {sphere.table_bytes / 1024 / 1024:.1f}MB")
+
+
+@test("既定 HRTF: 全天球なら上と下で音色がはっきり変わる（水平面の既定は ±5度まで）")
+def t_default_sphere_engine() -> str:
+    from audiospace import default_hrir
+
+    def render(hrir, elevation_deg: float) -> np.ndarray:
+        engine = SpatialEngine(hrir, block=BLOCK, max_sources=2,
+                               front_back_depth=0.0, limiter=False)
+        noise = (np.random.default_rng(3).standard_normal(SR)
+                 * 0.2).astype(np.float32)
+        el = math.radians(elevation_deg)
+        engine.add_source(BufferSource(noise, loop=True),
+                          position=(0.0, 2.0 * math.cos(el),
+                                    2.0 * math.sin(el)), reverb_send=0.0)
+        return engine.render_seconds(0.5)[BLOCK * 4:]
+
+    def tilt(x: np.ndarray) -> float:
+        """6〜12kHz と 1〜3kHz のエネルギーの比（dB）。左右を別々に測って足す。"""
+        high = sum(band_energy(x[:, ch], 6000, 12000) for ch in (0, 1))
+        mid = sum(band_energy(x[:, ch], 1000, 3000) for ch in (0, 1))
+        return 10 * math.log10(high / mid)
+
+    lines = []
+    diffs = {}
+    for name, hrir in (("全天球", default_hrir(SR, full_sphere=True)),
+                       ("水平面", default_hrir(SR))):
+        up, level, down = (tilt(render(hrir, e)) for e in (45.0, 0.0, -45.0))
+        diffs[name] = max(abs(up - level), abs(down - level))
+        lines.append(f"{name}: 上 {up:+.1f}dB、水平 {level:+.1f}dB、"
+                     f"下 {down:+.1f}dB")
+    # 水平面の既定は仰角 ±5度までしか無いので、上下の音もそこで鳴る
+    flat = default_hrir(SR)
+    used = flat.elevation[flat.indices_for(np.array([0.0, 0.0]),
+                                           np.array([45.0, -45.0]))]
+    assert np.all(np.abs(used) <= 5.0), used
+    assert diffs["全天球"] > 3.0, ("全天球で上下の音色が変わらない", diffs)
+    assert diffs["全天球"] > 3.0 * diffs["水平面"], diffs
+    return "\n".join(lines)
+
+
+@test("既定 HRTF: SpatialPlayer.open(full_sphere=True) で全天球になる")
+def t_player_full_sphere() -> str:
+    player = SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None,
+                                full_sphere=True)
+    try:
+        assert player.engine.hrir.n_directions == 1513, \
+            player.engine.hrir.n_directions
+    finally:
+        player.stop()
+    try:
+        SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None,
+                           full_sphere=True,
+                           hrir=HrirSet.synthetic(sample_rate=SR))
+        raise AssertionError("HRTF を2通りに指定できてしまった")
+    except ValueError:
+        pass
+    return "全天球の1513方向で開き、hrir と同時の指定は ValueError"
+
+
+# -- 鳴らし始めの時刻の指定（2026-11-18） ----------------------------------
+def _onset(x: np.ndarray, thresh: float = 1e-6) -> int:
+    """最初に音が出たサンプルの位置（無ければ -1）。"""
+    idx = np.flatnonzero(np.abs(x) > thresh)
+    return int(idx[0]) if idx.size else -1
+
+
+def _flat_click(engine: SpatialEngine, pan: float, at: int = 0,
+                **kwargs) -> int:
+    """左（pan -1）か右（+1）だけに鳴る、1サンプルのクリック。"""
+    click = np.zeros(64 + at, np.float32)
+    click[at] = 0.5
+    return engine.add_source(BufferSource(click), spatialise=False, pan=pan,
+                             reverb_send=0.0, **kwargs)
+
+
+@test("遅らせて鳴らす: delay_s のサンプルちょうどに、データのとおりの大きさで鳴り始める")
+def t_delay_exact() -> str:
+    # 0 は遅らせない音。先頭の1サンプルのクリックも消えずに鳴る
+    for wait in (0, 1, 100, 511, 512, 700, 1300, 5000):
+        engine = make_engine(limiter=False)
+        _flat_click(engine, -1.0, delay_s=wait / SR)
+        out = np.concatenate([engine.render()
+                              for _ in range(wait // BLOCK + 2)])
+        at = _onset(out[:, 0])
+        assert at == wait, (wait, at)
+        want = 0.5 * engine.master_gain
+        assert abs(out[at, 0] - want) < 1e-6, (wait, out[at, 0], want)
+        assert np.max(np.abs(out[:, 1])) == 0.0, "右に漏れた"
+    # ループする音は、最初の1回だけ遅れる
+    engine = make_engine(limiter=False)
+    seg = np.zeros(300, np.float32)
+    seg[0] = 0.5
+    engine.add_source(BufferSource(seg, loop=True), spatialise=False,
+                      pan=-1.0, reverb_send=0.0, delay_s=700 / SR)
+    out = np.concatenate([engine.render() for _ in range(5)])[:, 0]
+    hits = np.flatnonzero(np.abs(out) > 1e-6)[:5].tolist()
+    assert hits == [700, 1000, 1300, 1600, 1900], hits
+    return ("0・1・100・511・512・700・1300・5000 サンプル遅らせて、どれもちょうど"
+            "その位置で、フェードインなしに鳴り始める。ループは最初だけ遅れる")
+
+
+@test("遅らせて鳴らす: 空間化した音も、前に無音を足した音と同じ音になる")
+def t_delay_matches_padding() -> str:
+    rng = np.random.default_rng(7)
+    noise = (0.3 * rng.standard_normal(SR // 2)).astype(np.float32)
+    wait = 1300                      # 3ブロック目の途中から鳴る
+    outs = []
+    for padded in (True, False):
+        engine = make_engine()
+        if padded:
+            data = np.concatenate([np.zeros(wait, np.float32), noise])
+            engine.add_source(BufferSource(data), position=(1.0, 2.0, 0.0))
+        else:
+            engine.add_source(BufferSource(noise), position=(1.0, 2.0, 0.0),
+                              delay_s=wait / SR)
+        outs.append(np.concatenate([engine.render() for _ in range(60)]))
+    diff = float(np.max(np.abs(outs[0] - outs[1])))
+    peak = float(np.max(np.abs(outs[0])))
+    assert peak > 0.01 and diff <= peak * 1e-5, (diff, peak)
+    return f"60ブロックの差の最大 {diff:.2e}（ピーク {peak:.3f}）"
+
+
+@test("遅らせて鳴らす: together() の中の音は、間に描画が入っても同じブロックから数える")
+def t_delay_together() -> str:
+    from contextlib import nullcontext
+
+    wait = 451                       # 9.4ms（水平の音の床の反射の遅れ）
+
+    def run(use_together: bool) -> tuple[int, int, float]:
+        engine = make_engine(limiter=False)
+        pre = []
+        with engine.together() if use_together else nullcontext():
+            _flat_click(engine, -1.0, at=200)
+            pre.append(engine.render())        # 音声のスレッドが割り込んだ
+            _flat_click(engine, 1.0, at=200, delay_s=wait / SR)
+        out = np.concatenate(pre + [engine.render() for _ in range(4)])
+        return (_onset(out[:, 0]), _onset(out[:, 1]),
+                float(np.max(np.abs(pre[0]))))
+
+    left, right, pre_peak = run(True)
+    assert pre_peak == 0.0, "together の中で鳴り始めた"
+    assert right - left == wait, (left, right)
+    left2, right2, _ = run(False)
+    assert right2 - left2 == wait + BLOCK, (left2, right2)
+    return (f"together あり: 差 {right - left} サンプル（指定どおり）。"
+            f"なし: 差 {right2 - left2} サンプル（1ブロック遅れる）")
+
+
+@test("遅らせて鳴らす: together() の中で例外が出たら、その組の音は鳴らさずに外す")
+def t_delay_together_error() -> str:
+    engine = make_engine()
+    ones = np.ones(4800, np.float32)
+    try:
+        with engine.together():
+            engine.add_source(BufferSource(ones), position=(0.0, 2.0, 0.0))
+            with engine.together():          # 入れ子は外側と一緒に扱う
+                engine.add_source(BufferSource(ones),
+                                  position=(1.0, 2.0, 0.0), delay_s=0.1)
+            raise RuntimeError("途中で失敗")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("例外が外へ出なかった")
+    assert engine.active_sources == 0, engine.active_sources
+    peak = max(float(np.max(np.abs(engine.render()))) for _ in range(20))
+    assert peak == 0.0, peak
+    with engine.together():
+        with engine.together():
+            h = engine.add_source(BufferSource(ones), position=(0.0, 2.0, 0.0))
+        assert engine.get_source(h)._held, "内側を抜けた時点で鳴り始めた"
+    assert not engine.get_source(h)._held
+    return "例外のときは2つとも外れて無音。入れ子は外側を抜けてから鳴り始める"
+
+
+@test("遅らせて鳴らす: 待っている間の停止・一時停止・全体の停止")
+def t_delay_wait_controls() -> str:
+    engine = make_engine(limiter=False)
+    h = _flat_click(engine, -1.0, delay_s=0.5)
+    engine.render()
+    engine.remove_source(h, fade_ms=30)
+    assert engine.active_sources == 0, "まだ鳴っていない音がフェードで残った"
+    wait = 700
+    h = _flat_click(engine, -1.0, delay_s=wait / SR)
+    blocks = [engine.render()]                  # ここで1ブロック数える
+    engine.set_source_active(h, False)
+    blocks += [engine.render() for _ in range(3)]   # 止めている間は数えない
+    engine.set_source_active(h, True)
+    engine.set_paused(True)
+    blocks.append(engine.render())              # 全体を止めている間も数えない
+    engine.set_paused(False)
+    blocks += [engine.render() for _ in range(3)]
+    at = _onset(np.concatenate(blocks)[:, 0])
+    assert at == wait + 4 * BLOCK, (at, wait + 4 * BLOCK)
+    return ("フェード付きの停止でもその場で外れる。止めていた4ブロックぶんだけ"
+            "後ろへずれて鳴る")
+
+
+@test("遅らせて鳴らす: play・play_ui・together と、負の値や NaN を断る")
+def t_delay_player() -> str:
+    player = SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    try:
+        noise = np.full(SR // 10, 0.1, np.float32)
+        # 無音の再生でも描画は進むので、数え始めない together の中で確かめる
+        with player.together():
+            a = player.play(noise, position=(0.0, 2.0, 0.0), delay_s=0.25)
+            b = player.play_ui(noise, delay_s=0.5)
+            for h, want in ((a, 12000), (b, 24000)):
+                slot = player.engine.get_source(h)
+                assert slot._held and slot._wait == want, (slot._wait, want)
+        assert not player.engine.get_source(a)._held
+        count = player.engine.active_sources
+        for bad in (-0.1, float("nan"), float("inf")):
+            try:
+                player.play(noise, delay_s=bad)
+                raise AssertionError(f"delay_s={bad} を受け付けた")
+            except ValueError:
+                pass
+        assert player.engine.active_sources == count
+    finally:
+        player.stop()
+    return "play と play_ui に delay_s が届く。負・NaN・無限大は ValueError"
+
+
+# -- 音のグループ（2026-11-18） --------------------------------------------
+def _flat_dc(engine: SpatialEngine, pan: float, level: float = 0.5,
+             seconds: float = 4.0, **kwargs) -> int:
+    """左（pan -1）か右（+1）だけに鳴る一定の値の音。大きさを読みやすい。"""
+    data = np.full(int(SR * seconds), level, np.float32)
+    return engine.add_source(BufferSource(data), spatialise=False, pan=pan,
+                             reverb_send=0.0, **kwargs)
+
+
+def _levels(engine: SpatialEngine, blocks: int) -> np.ndarray:
+    """各ブロックの最後のサンプルの左右の値（ランプが終わった後の値）。"""
+    return np.array([engine.render()[-1] for _ in range(blocks)])
+
+
+@test("グループ: 音量はグループの音だけに、音ごとの音量に重ねて掛かる")
+def t_group_gain() -> str:
+    engine = make_engine(limiter=False)
+    mg = engine.master_gain
+    engine.set_group_gain("sfx", 0.5)          # 鳴らす前に決めておける
+    _flat_dc(engine, -1.0, gain=0.5, group="sfx")
+    _flat_dc(engine, 1.0)
+    out = _levels(engine, 2)[-1]
+    assert abs(out[0] - 0.5 * 0.5 * 0.5 * mg) < 1e-6, out
+    assert abs(out[1] - 0.5 * mg) < 1e-6, "グループの外の音まで変わった"
+    # ランプは指定の時間で行き先に着く（100ms = 9.4ブロック → 10ブロック目）。
+    # ブロックの中でもなめらかに変えるので、着いた値になるのは次のブロック
+    engine.set_group_gain("sfx", 1.0, ramp_ms=100)
+    assert engine.group_gain("sfx") == 1.0, "行き先を返していない"
+    lv = _levels(engine, 12)[:, 0] / (0.25 * mg)
+    assert 0.5 < lv[4] < 1.0 and lv[9] > 0.999, lv
+    assert abs(lv[10] - 1.0) < 1e-6, lv
+    assert np.all(np.diff(lv) >= -1e-7), "ランプが行き来した"
+    engine.set_group_gain_db("sfx", -6.0)
+    assert abs(engine.group_gain("sfx") - 10 ** (-6 / 20)) < 1e-9
+    assert engine.group_gain("まだ無い") == 1.0
+    for bad in ((("sfx", float("nan")), "NaN"), ((3, 1.0), "名前が数")):
+        try:
+            engine.set_group_gain(*bad[0])
+            raise AssertionError(f"{bad[1]} を受け付けた")
+        except ValueError:
+            pass
+    try:
+        _flat_dc(engine, 0.0, group=7)
+        raise AssertionError("名前でないグループを受け付けた")
+    except ValueError:
+        pass
+    return ("0.5 × 0.5 の音が 0.25 倍で鳴り、外の音は変わらない。100ms のランプは"
+            "10ブロック目で着く。NaN・名前でない値は ValueError")
+
+
+@test("グループ: 一時停止はその場で止めて、再開でフェードインして続きから鳴る")
+def t_group_pause() -> str:
+    engine = make_engine(limiter=False)
+    ramp = np.arange(SR * 2, dtype=np.float32) / (SR * 2)
+    src = BufferSource(ramp)
+    music = engine.add_source(src, spatialise=False, pan=-1.0,
+                              reverb_send=0.0, group="music")
+    _flat_dc(engine, 1.0, group="sfx")
+    engine.render()
+    engine.set_group_paused("music", True)
+    held = src.position
+    later = _flat_dc(engine, -1.0, group="music", delay_s=0.05)
+    out = _levels(engine, 5)
+    assert src.position == held and np.all(out[:, 0] == 0.0), "止まらない"
+    assert np.all(out[:, 1] > 0.0), "ほかのグループまで止まった"
+    assert engine.get_source(later)._wait == 2400, "止めている間に数えた"
+    # 止めている間のフェード停止はその場で外れる
+    engine.stop_group("music", fade_ms=30)
+    assert engine.sources_in_group("music") == []
+    # 1つだけ止めた音は、グループを再開しても止まったまま
+    music = engine.add_source(BufferSource(ramp), spatialise=False,
+                              pan=-1.0, reverb_send=0.0, group="music")
+    engine.set_group_paused("music", False)
+    engine.render()
+    engine.set_source_active(music, False)
+    engine.set_group_paused("music", True)
+    engine.set_group_paused("music", False)
+    engine.render()
+    assert np.all(engine.render()[:, 0] == 0.0), "1つだけ止めた音が鳴った"
+    engine.set_source_active(music, True)
+    block = engine.render()[:, 0]
+    assert block[0] == 0.0 and block[-1] > 0.0, "再開でフェードインしない"
+    return ("止めている間は読まず、遅らせた音の待ちも減らない。ほかのグループは"
+            "鳴り続ける。1つだけ止めた音は止まったまま")
+
+
+@test("グループ: stop_group・group_sounds・set_sound_group")
+def t_group_stop() -> str:
+    engine = make_engine(limiter=False)
+    a = _flat_dc(engine, -1.0, group="sfx")
+    b = _flat_dc(engine, -1.0, group="sfx")
+    c = _flat_dc(engine, 1.0)
+    engine.render()
+    assert engine.sources_in_group("sfx") == [a, b]
+    engine.set_source_group(b, "voice")
+    assert engine.sources_in_group("sfx") == [a]
+    assert engine.sources_in_group("voice") == [b]
+    stopped = engine.stop_group("sfx", fade_ms=30)
+    assert stopped == [a]
+    lv = _levels(engine, 6)
+    assert a not in engine.sources_in_group("sfx")
+    assert engine.active_sources == 2, engine.active_sources
+    assert np.all(lv[:, 1] > 0.0), "グループの外の音が止まった"
+    engine.set_source_group(c, None)
+    assert engine.get_source(c).group is None
+    return "フェードして外れるのは sfx の音だけ。移した音は新しいグループで数える"
+
+
+@test("グループ: ダッキングは声の間だけ下げて戻し、決めた音量は上書きしない")
+def t_group_ducking() -> str:
+    engine = make_engine(limiter=False)
+    mg = engine.master_gain
+    block_s = BLOCK / SR
+    _flat_dc(engine, -1.0, group="music")
+    engine.set_group_gain("music", 0.5)
+    engine.set_ducking("music", by="voice", db=-12.0, attack_ms=50.0,
+                       release_ms=200.0)
+    voice = _flat_dc(engine, 1.0, level=0.2, seconds=0.5, group="voice",
+                     delay_s=0.2)
+    lv = _levels(engine, 150)[:, 0] / (0.5 * 0.5 * mg)
+    duck = 10 ** (-12 / 20)
+    start = int(0.2 / block_s) + 1
+    attack = int(np.ceil(0.05 / block_s))
+    assert abs(lv[start - 2] - 1.0) < 1e-6, "声の前から下がった"
+    assert abs(lv[start + attack] - duck) < 1e-6, (lv[start:start + 8], duck)
+    end = int(0.7 / block_s) + 2
+    release = int(np.ceil(0.2 / block_s))
+    assert lv[end] < 1.0, "声が終わってすぐ戻った（リリースが無い）"
+    assert abs(lv[end + release + 1] - 1.0) < 1e-6, lv[end:end + release + 3]
+    assert engine.group_gain("music") == 0.5, "決めた音量が変わった"
+    engine.reap_finished()
+    assert voice not in engine.sources_in_group("voice")
+    # 声のグループを止めている間は、鳴っている扱いにしない
+    _flat_dc(engine, 1.0, level=0.2, seconds=1.0, group="voice")
+    engine.set_group_paused("voice", True)
+    _levels(engine, 10)
+    assert abs(engine.group_level("music") - 0.5) < 1e-9
+    engine.set_group_paused("voice", False)
+    # 手で下げる（読み上げソフトの声など、エンジンを通らない声）
+    engine.stop_group("voice")
+    engine.hold_ducking("music", True)
+    _levels(engine, 10)
+    assert abs(engine.group_level("music") - 0.5 * duck) < 1e-9
+    engine.clear_ducking("music")
+    _levels(engine, 25)
+    assert abs(engine.group_level("music") - 0.5) < 1e-9, "決まりを消しても戻らない"
+    for args, kw, why in ((("music",), {"by": "music"}, "自分で自分を下げる"),
+                          (("music",), {"db": 3.0}, "上げるダッキング"),
+                          (("music",), {"attack_ms": -1.0}, "負の時間")):
+        try:
+            engine.set_ducking(*args, **kw)
+            raise AssertionError(f"{why}を受け付けた")
+        except ValueError:
+            pass
+    try:
+        engine.hold_ducking("sfx")
+        raise AssertionError("決まりの無いグループを手で下げられた")
+    except ValueError:
+        pass
+    return (f"-12dB へ {attack} ブロック（50ms）で下がり、声の後 {release} ブロック"
+            "（200ms）で戻る。音量 0.5 はそのまま。手で下げる・決まりを消すと戻る")
+
+
+@test("グループ: プレイヤーの play・play_ui と、グループの操作")
+def t_group_player() -> str:
+    player = SpatialPlayer.open(block=BLOCK, max_sources=6, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    try:
+        tone_data = np.full(SR, 0.1, np.float32)
+        player.set_group_gain_db("sfx", -6.0)
+        a = player.play(tone_data, position=(0.0, 2.0, 0.0), group="sfx",
+                        loop=True)
+        b = player.play_ui(tone_data, group="ui")
+        assert player.group_sounds("sfx") == [a]
+        assert player.group_sounds("ui") == [b]
+        assert abs(player.group_gain("sfx") - 10 ** (-6 / 20)) < 1e-9
+        player.pause_group("sfx")
+        assert player.engine.group_paused("sfx")
+        player.resume_group("sfx")
+        assert not player.engine.group_paused("sfx")
+        player.set_sound_group(b, "sfx")
+        player.set_ducking("music", by=("voice", "ui"), db=-9.0)
+        player.hold_ducking("music", True)
+        player.clear_ducking("music")
+        assert sorted(player.stop_group("sfx")) == sorted([a, b])
+        assert player.engine.active_sources == 0
+    finally:
+        player.stop()
+    return "play・play_ui の group、音量・一時停止・移す・止める・ダッキングが届く"
+
+
+# -- 鳴り終わりの知らせ（2026-11-18） --------------------------------------
+@test("鳴り終わり: データを読み終えたブロックで1回だけ記録し、頼んだ音だけ")
+def t_end_finished() -> str:
+    from audiospace import SOUND_FINISHED
+    engine = make_engine()
+    short = np.full(2400, 0.1, np.float32)          # 4ブロック目の途中で終わる
+    a = engine.add_source(BufferSource(short), position=(0.0, 2.0, 0.0),
+                          notify_end=True)
+    engine.add_source(BufferSource(np.full(SR, 0.1, np.float32), loop=True),
+                      position=(1.0, 2.0, 0.0), notify_end=True)
+    engine.add_source(BufferSource(short), position=(-1.0, 2.0, 0.0))
+    for _ in range(4):
+        engine.render()
+    assert engine.take_ended() == [], "鳴り終わる前に知らせた"
+    engine.render()
+    events = engine.take_ended()
+    assert len(events) == 1 and events[0].handle == a, events
+    assert events[0].reason == SOUND_FINISHED
+    assert abs(events[0].at_s - 4 * BLOCK / SR) < 1e-9, events[0].at_s
+    for _ in range(5):
+        engine.render()
+    engine.reap_finished()
+    assert engine.take_ended() == [], "回収のときに二重に知らせた"
+    # 鳴る前に終わっている音（空の音）は、回収のときに finished
+    empty = engine.add_source(BufferSource(np.zeros(0, np.float32)),
+                              notify_end=True)
+    engine.reap_finished()
+    events = engine.take_ended()
+    assert [(e.handle, e.reason) for e in events] == [(empty, SOUND_FINISHED)]
+    return (f"2400サンプルの音は 5ブロック目（{4 * BLOCK / SR * 1000:.1f}ms から"
+            "のブロック）で1回。ループと、頼んでいない音は知らせない")
+
+
+@test("鳴り終わり: 止めた音は stopped（フェードは終わってから）、壊れた音は error")
+def t_end_stopped() -> str:
+    from audiospace import SOUND_ERROR, SOUND_STOPPED
+    engine = make_engine()
+    loop = BufferSource(np.full(SR, 0.1, np.float32), loop=True)
+    a = engine.add_source(loop, position=(0.0, 2.0, 0.0), notify_end=True)
+    engine.render()
+    engine.remove_source(a, fade_ms=30)
+    assert engine.take_ended() == [], "フェードの途中で知らせた"
+    for _ in range(6):
+        engine.render()
+    events = engine.take_ended()
+    assert [(e.handle, e.reason) for e in events] == [(a, SOUND_STOPPED)]
+    # 待っている音・グループごと・together の失敗
+    b = engine.add_source(BufferSource(np.ones(100, np.float32)),
+                          notify_end=True, delay_s=1.0)
+    engine.remove_source(b, fade_ms=30)
+    c = engine.add_source(BufferSource(np.ones(SR, np.float32)),
+                          notify_end=True, group="sfx")
+    engine.stop_group("sfx")
+    try:
+        with engine.together():
+            d = engine.add_source(BufferSource(np.ones(SR, np.float32)),
+                                  notify_end=True)
+            raise RuntimeError("途中で失敗")
+    except RuntimeError:
+        pass
+    got = [(e.handle, e.reason) for e in engine.take_ended()]
+    assert got == [(b, SOUND_STOPPED), (c, SOUND_STOPPED),
+                   (d, SOUND_STOPPED)], got
+
+    def broken(n):
+        raise RuntimeError("壊れた音源")
+
+    e = engine.add_source(CallbackSource(broken), notify_end=True)
+    engine.render()
+    events = engine.take_ended()
+    assert [(x.handle, x.reason) for x in events] == [(e, SOUND_ERROR)]
+    assert "壊れた音源" in events[0].detail
+    return "フェードが終わってから stopped。待っている音・グループ・together も stopped。壊れた音は error と理由"
+
+
+@test("鳴り終わり: プレイヤーの on_end を poll_ends で、呼んだスレッドで呼ぶ")
+def t_end_player_poll() -> str:
+    from audiospace import SOUND_FINISHED, SOUND_STOPPED
+    player = SpatialPlayer.open(block=BLOCK, max_sources=6, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    got: list = []
+    me = threading.current_thread()
+    try:
+        def record(event):
+            got.append((event.handle, event.reason,
+                        threading.current_thread() is me))
+
+        def bad(event):
+            raise ValueError("関数の中の誤り")
+
+        a = player.play(np.full(2400, 0.1, np.float32),
+                        position=(0.0, 2.0, 0.0), on_end=bad)
+        b = player.play_ui(np.full(2400, 0.1, np.float32), on_end=record)
+        c = player.play(np.full(SR, 0.1, np.float32), loop=True,
+                        position=(1.0, 2.0, 0.0), on_end=record)
+        deadline = time.time() + 3.0
+        while len(got) < 1 and time.time() < deadline:
+            player.poll_ends()
+            time.sleep(0.01)
+        player.stop_sound(c)
+        player.poll_ends()
+        assert got == [(b, SOUND_FINISHED, True), (c, SOUND_STOPPED, True)], got
+        assert player.callback_errors == 1, "誤りを数えていない"
+        assert "関数の中の誤り" in player.status()
+        assert a not in player.engine._slots, "鳴り終わった音を回収していない"
+        try:
+            player.play(np.ones(10, np.float32), on_end="呼べない")
+            raise AssertionError("呼べない on_end を受け付けた")
+        except ValueError:
+            pass
+        # poll_ends を呼ばずに放っておくと、status() が知らせる
+        d = player.play(np.full(480, 0.1, np.float32), on_end=record)
+        deadline = time.time() + 2.0
+        while not player.engine.pending_ends() and time.time() < deadline:
+            time.sleep(0.01)
+        with player.engine._lock:
+            player.engine._elapsed += 5.0       # 時間が経ったことにする
+        assert "届けていない鳴り終わりの知らせ1件" in player.status(), \
+            player.status()
+        player.poll_ends()
+        assert got[-1][0] == d
+    finally:
+        player.stop()
+    return ("on_end は poll_ends を呼んだスレッドで、終わった順に1回ずつ。関数の誤りは"
+            "ほかを止めずに数える。届けていない知らせは status() に出る")
+
+
+@test("鳴り終わり: watch_ends は自分のスレッドで届け、dispatch で渡し先を選べる")
+def t_end_player_watch() -> str:
+    player = SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    handed: list = []
+    done = threading.Event()
+    try:
+        def dispatch(fn, event):
+            handed.append(threading.current_thread().name)
+            fn(event)
+
+        player.watch_ends(interval_s=0.01, dispatch=dispatch)
+        assert player.watching_ends
+        player.play(np.full(2400, 0.1, np.float32), position=(0.0, 2.0, 0.0),
+                    on_end=lambda event: done.set())
+        assert done.wait(3.0), "watch_ends が届けない"
+        assert handed == ["audiospace-end-notices"], handed
+    finally:
+        player.stop()
+    assert not player.watching_ends, "stop で止まらない"
+    return "見張りのスレッドから dispatch(fn, event) で届き、stop で止まる"
+
+
+# -- 部屋をまたぐ音の自動の遮蔽（2026-11-18） ------------------------------
+def _occ_world(east_of_a: str = "rough_concrete"):
+    """部屋 A・B（東西に並ぶ）と、北の廊下 C。A と C の間に戸口。"""
+    from audiospace import Opening, Space
+    walls = {f: "rough_concrete" for f in ("west", "east", "south", "north",
+                                           "floor", "ceiling")}
+    a = Space((0, 0, 0), (5, 4, 3), dict(walls, east=east_of_a), name="A")
+    b = Space((5, 0, 0), (5, 4, 3), dict(walls, west="plasterboard"),
+              name="B")
+    c = Space((0, 4, 0), (10, 2, 3), dict(walls), name="C")
+    door = Opening((2.0, 3.9, 0.0), (3.0, 4.1, 2.0), name="doorA")
+    return [a, b, c], [door]
+
+
+@test("遮蔽: 壁の材質で下げ、同じ平面の両側の壁は1枚、穴と開いた面は通す")
+def t_occ_geometry() -> str:
+    from audiospace import Opening, Space, material_occlusion
+    from audiospace.occlusion import OcclusionMap
+    spaces, doors = _occ_world()
+    lis = (2.5, 2.0, 1.6)
+    omap = OcclusionMap(spaces, doors)
+    same, nxt, corner, front, outside = omap.query(
+        [(4.0, 3.0, 1.6), (7.5, 2.0, 1.6), (8.0, 5.0, 1.6),
+         (2.5, 5.0, 1.6), (2.5, -5.0, 1.6)], lis)
+    concrete = material_occlusion("rough_concrete")
+    assert same.loss_db == 0.0 and same.walls == ()
+    # A の東の壁（コンクリート）と B の西の壁（石膏ボード）は同じ平面: 強いほう1枚
+    assert (nxt.loss_db, nxt.lowpass) == concrete, nxt
+    assert nxt.walls == ("rough_concrete",), nxt.walls
+    assert front.loss_db == 0.0, "開いた戸口の正面で下がった"
+    assert outside.walls == ("rough_concrete",)
+    # 角の先の廊下: まっすぐなら壁2枚。戸口から回り込む
+    assert corner.via == ("doorA",) and corner.position is not None, corner
+    toward = np.subtract(corner.position, lis)
+    assert toward[1] > 0 and abs(np.degrees(np.arctan2(toward[0], toward[1]))) < 30, \
+        f"戸口（北）の方向から聞こえない: {toward}"
+    assert 6.5 < np.linalg.norm(toward) < 8.0, "道のりの距離で聞こえない"
+    # 戸を閉めると戸の材質、間の部屋を通ると壁2枚の和
+    closed = OcclusionMap(spaces, [Opening(doors[0].lo, doors[0].hi,
+                                           "wooden_door", "doorA")])
+    front_closed = closed.query([(2.5, 5.0, 1.6)], lis)[0]
+    assert (front_closed.loss_db, front_closed.lowpass) == \
+        material_occlusion("wooden_door"), front_closed
+    walls = {f: "rough_concrete" for f in ("west", "east", "south", "north",
+                                           "floor", "ceiling")}
+    row = [Space((x * 5.0, 0, 0), (5, 4, 3), dict(walls)) for x in range(3)]
+    two = OcclusionMap(row).query([(12.5, 2.0, 1.6)], lis)[0]
+    assert abs(two.loss_db - 2 * concrete[0]) < 1e-9, two
+    # 開いた面はそのまま通す。強さと材質の差し替え
+    open_east = OcclusionMap([Space((0, 0, 0), (5, 4, 3),
+                                    dict(walls, east="open")),
+                              Space((5, 0, 0), (5, 4, 3),
+                                    dict(walls, west="open"))])
+    assert open_east.query([(7.5, 2.0, 1.6)], lis)[0].loss_db == 0.0
+    half = OcclusionMap(spaces, doors, strength=0.5).query(
+        [(7.5, 2.0, 1.6)], lis)[0]
+    assert abs(half.loss_db - concrete[0] / 2) < 1e-9
+    # 差し替えると、同じ壁の反対側（石膏ボード 7dB）のほうが強くなる
+    custom = OcclusionMap(spaces, doors, materials={
+        "rough_concrete": (3.0, 0.2)}).query([(7.5, 2.0, 1.6)], lis)[0]
+    assert custom.walls == ("plasterboard",), custom
+    custom = OcclusionMap(spaces, doors, materials={
+        "rough_concrete": (3.0, 0.2), "plasterboard": (2.0, 0.1)}).query(
+        [(7.5, 2.0, 1.6)], lis)[0]
+    assert abs(custom.loss_db - 3.0) < 1e-9 and \
+        abs(custom.lowpass - 0.2) < 1e-9, custom
+    return (f"隣の部屋 {nxt.loss_db:g}dB（1枚）、間の部屋を通ると {two.loss_db:g}dB、"
+            f"角の先は戸口から {corner.loss_db:.1f}dB、戸を閉めると "
+            f"{front_closed.loss_db:g}dB")
+
+
+@test("遮蔽: エンジンで下がり、鳴り始めからこもり、動くとなめらかに変わる")
+def t_occ_engine() -> str:
+    spaces, doors = _occ_world()
+    rng = np.random.default_rng(2)
+    noise = (0.2 * rng.standard_normal(SR * 2)).astype(np.float32)
+
+    def run(occ: bool, **kw):
+        engine = make_engine()
+        engine.set_spaces(spaces, early=False, late=False)
+        if occ:
+            engine.set_auto_occlusion(openings=doors)
+        engine.set_listener((2.5, 2.0, 1.6))
+        h = engine.add_source(BufferSource(noise, loop=True),
+                              position=(7.5, 2.0, 1.6), reverb_send=0.0, **kw)
+        engine.render()
+        first = engine.get_source(h)._occ_db
+        out = np.concatenate([engine.render() for _ in range(30)])
+        return engine, h, first, 20 * np.log10(np.sqrt(np.mean(out ** 2)))
+
+    _, _, _, open_level = run(False)
+    engine, h, first, level = run(True)
+    drop = level - open_level
+    assert -26.0 < drop < -18.0, f"コンクリートの壁で {drop:.1f}dB"
+    assert first == engine.source_occlusion(h).loss_db, "鳴り始めがこもっていない"
+    _, _, _, free = run(True, occlude=False)
+    assert abs(free - open_level) < 0.01, "occlude=False でも下がった"
+    # 部屋の中へ動くと、なめらかに戻る（1ブロックで飛ばない）
+    engine.set_source_position(h, (4.0, 2.0, 1.6))
+    engine.render()
+    slot = engine.get_source(h)
+    step = engine.OCCLUSION_DB_PER_100MS * BLOCK / SR / 0.1
+    assert abs(slot._occ_db - (14.0 - step)) < 1e-6, slot._occ_db
+    for _ in range(30):
+        engine.render()
+    assert slot._occ_db == 0.0 and slot._occ_lp == 0.0
+    # 戸の開け閉め、切ると戻る
+    engine.set_source_position(h, (2.5, 5.0, 1.6))
+    engine.render()
+    assert engine.source_occlusion(h).loss_db == 0.0
+    engine.set_opening("doorA", "wooden_door")
+    engine.render()
+    assert engine.source_occlusion(h).walls == ("wooden_door",)
+    engine.set_auto_occlusion(False)
+    for _ in range(30):
+        engine.render()
+    assert not engine._occ_active and slot._occ_db == 0.0, "切っても戻らない"
+    return (f"コンクリートの壁の向こうで {drop:.1f}dB。鳴り始めから {first:g}dB、"
+            f"動くと1ブロック {step:.1f}dB ずつ戻る。戸を閉めると木の戸")
+
+
+@test("遮蔽: 手で決めたこもりと合わさり、誤った指定は断る")
+def t_occ_controls() -> str:
+    from audiospace import Opening
+    spaces, doors = _occ_world()
+    engine = make_engine()
+    engine.set_spaces(spaces, early=False, late=False)
+    for bad, why in (({"openings": ["戸"]}, "Opening でない"),
+                     ({"openings": doors * 2}, "名前の重なり"),
+                     ({"strength": -1.0}, "負の強さ"),
+                     ({"materials": {"wood_16mm": (5.0, 2.0)}}, "こもり 2")):
+        try:
+            engine.set_auto_occlusion(**bad)
+            raise AssertionError(f"{why}を受け付けた")
+        except ValueError:
+            pass
+    try:
+        engine.set_opening("doorA")
+        raise AssertionError("切っているのに戸を開け閉めできた")
+    except ValueError:
+        pass
+    engine.set_auto_occlusion(openings=doors)
+    try:
+        engine.set_opening("無い戸")
+        raise AssertionError("無い戸を受け付けた")
+    except KeyError:
+        pass
+    try:
+        Opening((0, 0, 0), (-1, 1, 1))
+        raise AssertionError("角の逆な穴を受け付けた")
+    except ValueError:
+        pass
+    engine.set_listener((2.5, 2.0, 1.6))
+    h = engine.add_source(BufferSource(np.full(SR, 0.1, np.float32),
+                                       loop=True),
+                          position=(7.5, 2.0, 1.6), lowpass=0.5)
+    engine.render()
+    slot = engine.get_source(h)
+    bucket = engine._lp_bucket[engine._slot_of_row.index(h)]
+    want = 1.0 - (1.0 - 0.5) * (1.0 - slot._occ_lp)
+    assert bucket == round(want * (engine.LP_BUCKETS - 1)) or bucket >= \
+        round(want * (engine.LP_BUCKETS - 1)) - 1, (bucket, want)
+    return "手のこもり 0.5 と壁のこもりが 1-(1-a)(1-b) で合わさる。誤りは ValueError"
+
+
+@test("遮蔽: プレイヤーの set_auto_occlusion・set_opening・sound_occlusion")
+def t_occ_player() -> str:
+    spaces, doors = _occ_world()
+    player = SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    try:
+        player.set_spaces(spaces, early=False, late=False)
+        player.set_auto_occlusion(openings=doors)
+        player.set_listener((2.5, 2.0, 1.6))
+        a = player.play(np.full(SR, 0.1, np.float32), loop=True,
+                        position=(7.5, 2.0, 1.6))
+        b = player.play(np.full(SR, 0.1, np.float32), loop=True,
+                        position=(7.5, 2.0, 1.6), occlude=False)
+        deadline = time.time() + 2.0
+        while (player.sound_occlusion(a).loss_db == 0.0
+               and time.time() < deadline):
+            time.sleep(0.01)
+        assert player.sound_occlusion(a).walls == ("rough_concrete",)
+        assert player.sound_occlusion(b).loss_db == 0.0
+        player.set_opening("doorA", "wooden_door")
+        assert player.engine.auto_occlusion
+    finally:
+        player.stop()
+    return "壁の向こうの音にコンクリートの壁、occlude=False の音はそのまま"
+
+
+# -- 耳介の選定（2026-11-18） ----------------------------------------------
+@test("耳介の選定: viking_candidates と load_pinna（npz を優先し、レートを合わせる）")
+def t_pinna_candidates() -> str:
+    import shutil
+
+    from audiospace import load_pinna, viking_candidates
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        for name in ("subj_B.sofa", "subj_A.sofa", "subj_Z.sofa"):
+            (folder / name).write_bytes(b"")
+        asset = Path(__file__).resolve().parents[1] / "audiospace" / "data" \
+            / "default_horizontal.npz"
+        shutil.copy(asset, folder / "subj_B.npz")
+        found = viking_candidates(folder)
+        names = [(Path(tag).name, label) for tag, label in found]
+        assert names == [("subj_A.sofa", "実測 Viking 耳介A"),
+                         ("subj_B.npz", "実測 Viking 耳介B"),
+                         ("subj_Z.sofa", "実測 Viking 耳介なし")], names
+        hrir = load_pinna(found[1][0], 44100)
+        assert hrir.sample_rate == 44100 and hrir.n_directions == 216
+    try:
+        viking_candidates(Path(tmp) / "無い")
+        raise AssertionError("無いフォルダで例外にならない")
+    except FileNotFoundError:
+        pass
+    return "A・B（npz）・耳介なしの順。npz は 44100Hz に合わせて読める。無いフォルダは例外"
+
+
+def _pinna_world():
+    """読み込みの代わりに、耳介ごとに方向の数の違う合成 HRTF を返す。"""
+    sizes = {"a.sofa": 36, "b.sofa": 40, "c.sofa": 44, "d.sofa": 48}
+    loads: list[str] = []
+
+    def loader(tag, rate):
+        loads.append(Path(tag).name)
+        return HrirSet.synthetic(n_azimuth=sizes[Path(tag).name],
+                                 sample_rate=rate)
+
+    candidates = [(f"pinnae/{n}", f"耳介{n[0].upper()}") for n in sizes]
+    return candidates, loader, loads, sizes
+
+
+@test("耳介の選定: PinnaSelection が切り替え・出題・記録・元に戻すまで進める")
+def t_pinna_selection() -> str:
+    from audiospace import Difficulty, PinnaSelection, RecordStore
+    candidates, loader, loads, sizes = _pinna_world()
+    player = SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    original = player.engine.hrir
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RecordStore(Path(tmp) / "pinna.json")
+            sel = PinnaSelection(player, candidates[:3], store,
+                                 difficulty=Difficulty.EIGHT, seed=3,
+                                 loader=loader)
+            assert len(sel.lineup) == 3 and sel.anchor is None
+            assert "3種類をそれぞれ16問ずつ" in sel.intro()
+            try:
+                sel.finish()
+                raise AssertionError("終わる前に記録できた")
+            except RuntimeError:
+                pass
+            switches = 0
+            while not sel.finished:
+                if sel.prepare():
+                    switches += 1
+                    n = sizes[Path(sel.session.current_tag).name]
+                    assert player.engine.hrir.n_directions == n
+                trial = sel.current()
+                handle = sel.play(np.full(480, 0.1, np.float32))
+                slot = player.engine.get_source(handle)
+                want = np.array(position_for_test(trial.truth_deg, 4.0))
+                assert slot.relative and np.allclose(slot.position, want)
+                good = sel.current_label == "耳介B"
+                sel.answer(trial.truth_deg if good
+                           else (180.0 - trial.truth_deg) % 360.0)
+            assert switches == 3 and loads == ["a.sofa", "b.sofa", "c.sofa"]
+            text = sel.finish()
+            assert player.engine.hrir is original, "元の HRTF に戻らない"
+            assert "通算の最良は耳介B" in text, text
+            assert sel.best() == ("pinnae/b.sofa", "耳介B")
+            assert (Path(tmp) / "pinna.json").exists(), "保存していない"
+            # 2回目は最良（B）が基準として最初に入る。途中でやめると記録しない
+            sel2 = PinnaSelection(player, candidates, store, seed=4,
+                                  loader=loader)
+            assert sel2.anchor == "pinnae/b.sofa"
+            assert sel2.lineup[0] == ("pinnae/b.sofa", "耳介B")
+            before = store.records["b.sofa"].n_answered
+            sel2.prepare()
+            sel2.answer(sel2.current().truth_deg)
+            sel2.cancel()
+            assert player.engine.hrir is original
+            assert store.records["b.sofa"].n_answered == before
+    finally:
+        player.stop()
+    return ("3種類×16問で切り替え3回、Bだけ正しく答えると通算の最良がB。2回目は"
+            "Bが基準で最初に入る。途中でやめると記録しない")
+
+
+def position_for_test(azimuth_deg: float, distance_m: float):
+    from audiospace.quiz import position_for
+    return position_for(azimuth_deg, distance_m)
+
+
+@test("耳介の選定: 上下の選定は高さで答え、上下の測定が無い耳介は断る")
+def t_pinna_elevation() -> str:
+    from audiospace import MODE_ELEVATION, PinnaSelection, RecordStore
+    from audiospace.quiz import ELEVATION_LEVELS
+    candidates, loader, _, _ = _pinna_world()
+    player = SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RecordStore(Path(tmp) / "elev.json")
+            flat = PinnaSelection(player, candidates[:2], store,
+                                  mode=MODE_ELEVATION, loader=loader)
+            try:
+                flat.prepare()
+                raise AssertionError("水平面だけの耳介で上下の選定ができた")
+            except ValueError:
+                pass
+            sphere = default_hrir_sphere()
+            sel = PinnaSelection(player, candidates[:2], store,
+                                 mode=MODE_ELEVATION, seed=2,
+                                 loader=lambda tag, rate: sphere)
+            assert sel.session.trials_per_candidate == 12
+            while not sel.finished:
+                trial = sel.current()
+                handle = sel.play(np.full(480, 0.1, np.float32))
+                z = player.engine.get_source(handle).position[2]
+                assert abs(z - 4.0 * np.sin(np.radians(trial.truth_el))) < 1e-9
+                sel.answer_elevation(trial.truth_el)
+            text = sel.finish()
+            assert "上下で最も成績が良かった" in text or "同成績" in text, text
+            assert store.records, "上下の記録が積まれていない"
+            assert {el for el, _ in ELEVATION_LEVELS} == {
+                t.truth_el for t in sel.session.trials}
+    finally:
+        player.stop()
+    return "上下は4つの高さを3回ずつ12問、高さの位置で鳴らす。水平面だけの耳介は ValueError"
+
+
+def default_hrir_sphere():
+    from audiospace import default_hrir
+    return default_hrir(SR, full_sphere=True)
+
+
+# -- 2026-11-18 のレビューの指摘 ----------------------------------------------
+@test("review4: キャッシュに入った効果音は、play のたびにファイルを開かない")
+def t_review4_cached_no_open() -> str:
+    import soundfile as sf
+
+    import audiospace.sources as sources_mod
+    player = SpatialPlayer.open(block=BLOCK, max_sources=6, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    opens = {"n": 0}
+    real = sources_mod._open_reader
+
+    def counting(path, backend=None):
+        opens["n"] += 1
+        return real(path, backend)
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            step = Path(tmp) / "step.wav"
+            sf.write(step, np.zeros(4800, np.float32), SR, subtype="FLOAT")
+            sources_mod._open_reader = counting
+            for _ in range(50):
+                player.stop_sound(player.play(step))
+            # 相対のパスでも同じキャッシュに当たる
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                player.stop_sound(player.play("step.wav"))
+            finally:
+                os.chdir(cwd)
+    finally:
+        sources_mod._open_reader = real
+        player.stop()
+    assert opens["n"] == 1, f"ファイルを {opens['n']} 回開いた"
+    assert len(player._sound_cache) == 1, player._sound_cache.keys()
+    return "51回鳴らして、ファイルを開いたのは最初の1回だけ（相対のパスも同じキャッシュ）"
+
+
+@test("review4: 少しずつ読む音も、ループの始めが終わり以降なら終わりの手前に直す")
+def t_review4_stream_loop_clamp() -> str:
+    import soundfile as sf
+
+    from audiospace import FileStreamSource
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        seg = np.zeros((1000, 1), np.float32)
+        seg[::100] = 0.5
+        seg[499] = 0.25
+        path = Path(tmp) / "loop.wav"
+        sf.write(path, seg, SR, subtype="FLOAT")
+        stream = FileStreamSource(path, SR, loop=True, loop_start=900,
+                                  loop_end=500)
+        whole = BufferSource.from_file(path, loop=True, loop_start=900,
+                                       loop_end=500)
+        got = _drain(stream, limit=8)
+        want = np.concatenate([whole.read(BLOCK) for _ in range(8)])
+        stream.close()
+    assert not stream.finished or got.size, "鳴り終わった"
+    assert np.array_equal(got[:len(want)], want), "BufferSource と違う"
+    return "loop_start=900・loop_end=500 で、BufferSource と同じ音（499 から繰り返す）"
+
+
+@test("review4: stream=True はファイルにだけ使え、配列や音源には ValueError")
+def t_review4_stream_non_file() -> str:
+    player = SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    try:
+        for sound in (np.zeros(480, np.float32),
+                      BufferSource(np.zeros(480, np.float32))):
+            try:
+                player.play(sound, stream=True)
+                raise AssertionError(f"{type(sound).__name__} に stream=True")
+            except ValueError:
+                pass
+        player.stop_sound(player.play(np.zeros(480, np.float32),
+                                      stream=False))
+    finally:
+        player.stop()
+    return "配列と BufferSource は ValueError、stream=False は今までどおり"
+
+
+@test("review4: 押し込み音源は、中身があるときだけダッキングのきっかけになる")
+def t_review4_push_ducking() -> str:
+    engine = make_engine(limiter=False)
+    _flat_dc(engine, -1.0, group="music")
+    push = PushSource(SR)
+    engine.add_source(push, spatialise=False, group="voice")
+    engine.set_ducking("music", by="voice", db=-12.0, attack_ms=50.0,
+                       release_ms=100.0)
+    _levels(engine, 30)
+    idle = engine.group_level("music")
+    assert abs(idle - 1.0) < 1e-9, f"何も書いていないのに下がった: {idle}"
+    push.write(np.full(SR // 2, 0.1, np.float32))
+    _levels(engine, 10)
+    duck = 10 ** (-12 / 20)
+    assert abs(engine.group_level("music") - duck) < 1e-9
+    _levels(engine, 60)                 # 0.5秒の声を鳴らし終えて、戻る
+    assert abs(engine.group_level("music") - 1.0) < 1e-9
+    return "空の間は 1.0、書くと -12dB、鳴らし終えると 1.0 に戻る"
+
+
+@test("review4: set_space だけでも自動の遮蔽が効き、空間が無ければ status() が言う")
+def t_review4_set_space_occlusion() -> str:
+    from audiospace import Space
+    walls = {f: "rough_concrete" for f in ("west", "east", "south", "north",
+                                           "floor", "ceiling")}
+    room = Space((0, 0, 0), (5, 4, 3), dict(walls))
+    engine = make_engine()
+    engine.set_space(room)
+    engine.set_auto_occlusion()
+    engine.set_listener((2.5, 2.0, 1.6))
+    h = engine.add_source(BufferSource(np.full(SR, 0.1, np.float32),
+                                       loop=True), position=(9.0, 2.0, 1.6))
+    engine.render()
+    assert engine.occlusion_spaces == 1
+    assert engine.source_occlusion(h).walls == ("rough_concrete",)
+    engine.set_space(None)               # 空間を外すと、遮蔽も外れる
+    engine.render()
+    assert engine.occlusion_spaces == 0
+    assert engine.source_occlusion(h).loss_db == 0.0
+    player = SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    try:
+        player.set_auto_occlusion()
+        assert "空間がありません" in player.status(), player.status()
+    finally:
+        player.stop()
+    return "set_space の部屋の外の音はコンクリートの壁。空間が無いと status() が知らせる"
+
+
+@test("review5: close() は少しずつ読む音のファイルを閉じる（stop() は残す）")
+def t_review5_close_releases_stream() -> str:
+    player = SpatialPlayer.open(block=BLOCK, max_sources=4, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        wav = Path(tmp) / "bgm.wav"
+        _write_noise(wav, 3.0, SR)
+        ended = []
+        h = player.play(wav, spatialise=False, loop=True, stream=True,
+                        on_end=ended.append)
+        thread = player.engine.get_source(h).source._thread
+        assert thread is not None and thread.is_alive()
+        player.stop()
+        assert player.engine.active_sources == 1, "stop() で音が外れた"
+        player.start()                       # stop() のあと、続きから鳴らせる
+        player.close()
+        assert player.engine.active_sources == 0
+        assert not thread.is_alive(), "読み込みのスレッドが残った"
+        wav.unlink()                         # 開いたままなら PermissionError
+        player.poll_ends()
+        assert [e.reason for e in ended] == ["stopped"], ended
+        player.close()                       # 2回呼んでもよい
+    return "close() のあと、スレッドは終わり、ファイルを消せた。stop() は音を残す"
+
+
+@test("review5: 関数の音源は、無音を返している間はダッキングのきっかけにならない")
+def t_review5_callback_ducking() -> str:
+    from audiospace import CallbackSource
+    engine = make_engine()
+    level = {"v": 0.0}
+    src = CallbackSource(lambda n: np.full(n, level["v"], np.float32))
+    engine.add_source(BufferSource(np.full(SR, 0.1, np.float32), loop=True),
+                      position=(0.0, 2.0, 0.0), group="music")
+    engine.add_source(src, position=(0.0, 2.0, 0.0), group="voice")
+    engine.set_ducking("music", by="voice", db=-12, attack_ms=20,
+                       release_ms=20)
+
+    def gain() -> float:
+        for _ in range(20):
+            engine.render()
+        return engine.group_level("music")
+
+    quiet = gain()
+    assert abs(quiet - 1.0) < 1e-6, f"無音なのに下げた: {quiet}"
+    level["v"] = 0.2
+    loud = gain()
+    assert abs(loud - 10 ** (-12 / 20)) < 1e-3, loud
+    level["v"] = 0.0
+    assert abs(gain() - 1.0) < 1e-6
+    level["v"] = float("nan")            # 壊れた値で例外にならない
+    src.read(64)
+    return f"無音の間は 1.000、鳴っている間は {loud:.3f}"
+
+
+@test("review5: 瞬間移動の直後、自動の遮蔽はその場で行き先の値になる")
+def t_review5_teleport_occlusion_jumps() -> str:
+    from audiospace import Space
+    walls = {f: "rough_concrete" for f in ("west", "east", "south", "north",
+                                           "floor", "ceiling")}
+    engine = SpatialEngine(HrirSet.synthetic(sample_rate=SR), block=BLOCK,
+                           max_sources=24)
+    engine.set_spaces([Space((0, 0, 0), (5, 4, 3), dict(walls))],
+                      early=False, late=False)
+    engine.set_auto_occlusion()
+    engine.set_listener((2.5, 2.0, 1.6))
+    handles = [engine.add_source(
+        BufferSource(np.full(SR, 0.1, np.float32), loop=True),
+        position=(1.0 + 0.1 * i, 2.0, 1.6)) for i in range(20)]
+    for _ in range(5):
+        engine.render()
+    slots = [engine.get_source(h) for h in handles]
+    assert all(s._occ_db == 0.0 for s in slots)
+    engine.teleport_listener((9.0, 2.0, 1.6))        # 部屋の外へ
+    engine.render()
+    want = slots[0]._occ.loss_db
+    assert want > 10.0
+    # 1ブロックに調べる数（16）より多い音も、全部その場で変わる
+    assert all(s._occ_db == want for s in slots), [s._occ_db for s in slots]
+    engine.set_listener((9.5, 2.0, 1.6))
+    engine.teleport_listener((2.5, 2.0, 1.6))        # 中へ戻る
+    engine.render()
+    assert all(s._occ_db == 0.0 for s in slots)
+    # 歩いて出るときは、今までどおりなめらかに変わる
+    engine.set_listener((9.0, 2.0, 1.6))
+    engine.render()
+    assert 0.0 < slots[0]._occ_db < want
+    return f"20音とも1ブロックで {want:.1f}dB。歩いたときはなめらか"
+
+
+@test("review5: 閉じた戸の近道があっても、開いた戸口を回る道を使う")
+def t_review5_route_avoids_closed_door() -> str:
+    from audiospace import Opening, Space
+    from audiospace.occlusion import OcclusionMap
+    walls = {f: "rough_concrete" for f in ("west", "east", "south", "north",
+                                           "floor", "ceiling")}
+    spaces = [Space((0, 0, 0), (5, 4, 3), dict(walls), name="A"),
+              Space((5, 0, 0), (5, 4, 3), dict(walls), name="B"),
+              Space((0, 4, 0), (10, 2, 3), dict(walls), name="C")]
+    shut = Opening((4.9, 0.5, 0), (5.1, 1.5, 2), "rough_concrete", "AB")
+    ways = [Opening((2.0, 3.9, 0), (3.0, 4.1, 2), None, "AC"),
+            Opening((7.0, 3.9, 0), (8.0, 4.1, 2), None, "BC")]
+    src, lis = (7.5, 3.0, 1.6), (2.5, 3.0, 1.6)
+    both = OcclusionMap(spaces, [shut] + ways).query([src], lis)[0]
+    only = OcclusionMap(spaces, ways).query([src], lis)[0]
+    assert both.via == ("BC", "AC"), both
+    assert abs(both.loss_db - only.loss_db) < 1e-9
+    # 戸を開けると近道になり、閉めるとまた回る（道の覚えを捨てている）
+    m = OcclusionMap(spaces, [shut] + ways)
+    m.query([src], lis)
+    m.set_opening_material("AB", None)
+    opened = m.query([src], lis)[0]
+    assert opened.via == ("AB",), opened
+    m.set_opening_material("AB", "rough_concrete")
+    again = m.query([src], lis)[0]
+    assert again.via == ("BC", "AC"), again
+    return (f"閉じた戸があっても {both.loss_db:.1f}dB（開いた遠回り）。"
+            f"戸を開けると {opened.loss_db:.1f}dB")
+
+@test("review4: 遮蔽の地図はロックの外で作り、戸の開け閉めは作り直さない")
+def t_review4_occlusion_map_outside_lock() -> str:
+    import audiospace.engine as engine_mod
+    from audiospace import Opening
+    from audiospace.occlusion import OcclusionMap
+    spaces, doors = _occ_world()
+    engine = make_engine()
+    engine.set_spaces(spaces, early=False, late=False)
+    held = []
+    calls = {"n": 0}
+
+    class Spy(OcclusionMap):
+        def __init__(self, *args, **kwargs):
+            # ほかのスレッドからエンジンのロックを取れるなら、持っていない
+            got = []
+
+            def probe():
+                ok = engine._lock.acquire(timeout=1.0)
+                got.append(ok)
+                if ok:
+                    engine._lock.release()      # 取ったスレッドで返す
+
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join()
+            held.append(not (got and got[0]))
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # 作っている途中で戸を閉める。作り終えたら作り直すはず
+                engine.set_opening("doorA", "wooden_door")
+            super().__init__(*args, **kwargs)
+
+    real = engine_mod.OcclusionMap
+    engine_mod.OcclusionMap = Spy
+    try:
+        engine.set_auto_occlusion(openings=doors)
+    finally:
+        engine_mod.OcclusionMap = real
+    assert held and not any(held), "地図をロックの中で作った"
+    assert calls["n"] == 2, f"途中の変更で作り直していない: {calls['n']}"
+    closed = engine._occ_map.openings[0].material
+    assert closed == "wooden_door", closed
+    # 戸の開け閉めは地図を作り直さず、作り直した地図と同じ答えになる
+    before = engine._occ_map
+    engine.set_opening("doorA")
+    assert engine._occ_map is before
+    lis = (2.5, 2.0, 1.6)
+    points = [(2.5, 5.0, 1.6), (8.0, 5.0, 1.6), (7.5, 2.0, 1.6)]
+    for material in ("wooden_door", None):
+        engine.set_opening("doorA", material)
+        fresh = OcclusionMap(spaces, [Opening(doors[0].lo, doors[0].hi,
+                                              material, "doorA")])
+        assert engine._occ_map.query(points, lis) == fresh.query(points, lis)
+    return ("地図を作る間、ほかのスレッドがロックを取れた。途中の戸の変更で作り直し、"
+            "戸の開け閉めは値だけ替えて、作り直したのと同じ答え")
+
+
+# -- 長いファイルを少しずつ読む（2026-11-18） ------------------------------
+def _drain(src, block: int = BLOCK, limit: int = 20000) -> np.ndarray:
+    """読み込みが追いつくのを待ちながら、最後まで読む（途切れを出さない）。"""
+    out = []
+    for _ in range(limit):
+        st = src._state
+        deadline = time.time() + 2.0
+        while (st.written - st.consumed < block and not st.drained
+               and time.time() < deadline):
+            time.sleep(0.0005)
+        out.append(src.read(block))
+        if src.finished:
+            break
+    return np.concatenate(out)
+
+
+def _write_noise(path: Path, seconds: float, rate: int, channels: int = 2,
+                 seed: int = 0) -> np.ndarray:
+    import soundfile as sf
+    x = (0.1 * np.random.default_rng(seed).standard_normal(
+        (int(seconds * rate), channels))).astype(np.float32)
+    sf.write(path, x, rate, subtype="FLOAT")
+    return x
+
+
+@test("少しずつ読む: 丸ごと読んだ音と同じ（レートの変換も、miniaudio でも）")
+def t_stream_matches_decode() -> str:
+    from audiospace import FileStreamSource, load_mono, load_stereo
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        f44 = Path(tmp) / "a44.wav"
+        f48 = Path(tmp) / "a48.wav"
+        _write_noise(f44, 3.0, 44100)
+        x48 = _write_noise(f48, 2.0, SR, seed=1)
+        diffs = []
+        for channels, loader in ((2, load_stereo), (1, load_mono)):
+            src = FileStreamSource(f44, SR, channels=channels)
+            got = _drain(src)
+            want, _ = loader(f44, SR)
+            n = min(len(got), len(want)) - 200
+            diff = float(np.max(np.abs(got[:n] - want[:n])))
+            assert diff < 1e-6 and src.underruns == 0, (channels, diff)
+            diffs.append(diff)
+        for backend in (None, "miniaudio"):
+            src = FileStreamSource(f48, SR, channels=2, _backend=backend)
+            got = _drain(src)
+            assert np.array_equal(got[:len(x48)], x48), backend
+            assert not np.any(got[len(x48):]), "終わりの後に音がある"
+    return (f"44.1kHz→48kHz の差 ステレオ {diffs[0]:.1e}・モノラル {diffs[1]:.1e}。"
+            "同じレートは soundfile・miniaudio ともビット単位で同じ")
+
+
+@test("少しずつ読む: ループの区間、捨てるとスレッドが終わる、間に合わないと数える")
+def t_stream_lifecycle() -> str:
+    import gc
+
+    import soundfile as sf
+
+    from audiospace import FileStreamSource
+
+    def streams() -> int:
+        return sum(1 for t in threading.enumerate()
+                   if t.name == "audiospace-stream" and t.is_alive())
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        seg = np.zeros((1000, 1), np.float32)
+        seg[0] = 0.5
+        seg[600] = 0.25
+        sf.write(Path(tmp) / "loop.wav", seg, SR, subtype="FLOAT")
+        src = FileStreamSource(Path(tmp) / "loop.wav", SR, loop=True,
+                               loop_start=100, loop_end=800)
+        got = _drain(src, limit=10)
+        hits = np.flatnonzero(np.abs(got) > 1e-6)[:6].tolist()
+        assert hits == [0, 600, 1300, 2000, 2700, 3400], hits
+        before = streams()
+        del src
+        gc.collect()
+        deadline = time.time() + 2.0
+        while streams() >= before and time.time() < deadline:
+            time.sleep(0.02)
+        assert streams() < before, "捨てた音源の読み込みのスレッドが残った"
+        long_file = Path(tmp) / "long.wav"
+        _write_noise(long_file, 3.0, SR)
+        fast = FileStreamSource(long_file, SR, buffer_seconds=0.1)
+        for _ in range(100):
+            fast.read(BLOCK)
+        assert fast.underruns > 0, "間に合わなかったのに数えない"
+        fast.close()
+        assert fast.finished and not np.any(fast.read(BLOCK))
+    return (f"700フレームの区間を正しく繰り返す。捨てるとスレッドが終わる。小さい"
+            f"バッファで急いで読むと途切れ {fast.underruns} 回")
+
+
+@test("少しずつ読む: 途中で読めなくなったら、その音だけ error で外れる")
+def t_stream_error() -> str:
+    import audiospace.sources as sources_mod
+    from audiospace import SOUND_ERROR, FileStreamSource
+
+    class Broken:
+        rate, channels, frames = SR, 1, SR * 10
+
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def read(self, n):
+            self.reads += 1
+            if self.reads > 12:
+                raise OSError("ディスクが外れた")
+            return np.full((n, 1), 0.1, np.float32)
+
+        def seek(self, frame):
+            pass
+
+        def close(self):
+            pass
+
+    real = sources_mod._open_reader
+    sources_mod._open_reader = lambda path, backend=None: Broken()
+    try:
+        src = FileStreamSource(Path(__file__), SR)
+    finally:
+        sources_mod._open_reader = real
+    engine = make_engine()
+    h = engine.add_source(src, position=(0.0, 2.0, 0.0), notify_end=True)
+    for _ in range(400):
+        engine.render()
+        time.sleep(0.001)
+        if h not in engine._slots:
+            break
+    events = engine.take_ended()
+    assert [e.reason for e in events] == [SOUND_ERROR], events
+    assert "ディスクが外れた" in events[0].detail
+    return f"読めた分を鳴らした後に外れ、理由は「{events[0].detail}」"
+
+
+@test("少しずつ読む: play は大きいファイルだけ少しずつ読む（stream で選べる）")
+def t_stream_player() -> str:
+    from audiospace import SOUND_FINISHED, FileStreamSource
+    player = SpatialPlayer.open(block=BLOCK, max_sources=6, reverb=None,
+                                hrir=HrirSet.synthetic(sample_rate=SR))
+    try:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            big = Path(tmp) / "big.wav"
+            _write_noise(big, 3.0, 44100)
+            small = Path(tmp) / "small.wav"
+            _write_noise(small, 0.3, SR)
+
+            def kind(**kw) -> str:
+                h = player.play(big, spatialise=False, **kw)
+                name = type(player.engine.get_source(h).source).__name__
+                player.stop_sound(h)
+                return name
+
+            assert kind() == "StereoBufferSource", "16MB 未満なのに少しずつ読んだ"
+            player.sound_cache_max_bytes = 100_000      # 大きいファイルの扱い
+            # キャッシュに入った音は、そのまま使う（ファイルを開いて調べない）。
+            # 入っていなければ少しずつ読む
+            assert kind() == "StereoBufferSource"
+            player.clear_sound_cache()
+            assert kind() == "FileStreamSource"
+            assert kind(stream=False) == "StereoBufferSource"
+            spatial = player.play(big, position=(0.0, 2.0, 0.0))
+            assert player.engine.get_source(spatial).source.channels == 1
+            player.stop_sound(spatial)
+            try:
+                player.play(big, stream=True, rate=1.2)
+                raise AssertionError("stream=True と rate を受け付けた")
+            except ValueError:
+                pass
+            ended = []
+            h = player.play(small, spatialise=False, stream=True,
+                            on_end=ended.append)
+            assert isinstance(player.engine.get_source(h).source,
+                              FileStreamSource)
+            deadline = time.time() + 3.0
+            while not ended and time.time() < deadline:
+                player.poll_ends()
+                time.sleep(0.01)
+            assert [e.reason for e in ended] == [SOUND_FINISHED], ended
+            looping = player.play(big, spatialise=False, loop=True)
+            src = player.engine.get_source(looping).source
+            src._state.underruns = 3
+            assert "ファイルの読み込みが間に合わず無音3ブロック" in player.status()
+            player.stop_sound(looping)
+            src.close()
+    finally:
+        player.stop()
+    return ("既定は 16MB を超えるファイルだけ。stream=True/False で選べ、rate と"
+            "一緒は ValueError。鳴り終わりの知らせも届く")
 
 
 @test("i18n: 表示の言語は AUDIOSPACE_LANG か OS の表示言語で決まり、日本語以外は英語")
@@ -3099,6 +4949,37 @@ TESTS = [
     t_review2_distinct_lines, t_review2_load_all_exact,
     t_review2_broken_tail, t_review2_exclusive_text,
     t_review2_set_space_edge,
+    # 2026-11-17 のレビュー対応
+    t_review3_enter_from_nowhere, t_review3_source_error_isolated,
+    t_review3_reject_nonfinite, t_review3_band_reverb_block,
+    t_review3_row_reuse, t_review3_decode_error, t_review3_block_mismatch,
+    t_review3_reverb_spec_sep, t_review3_table_bytes,
+    # 出力デバイスの見張り（2026-11-17）
+    t_device_poll, t_device_watch,
+    # 全天球の既定 HRTF（2026-11-17）
+    t_default_sphere, t_default_sphere_engine, t_player_full_sphere,
+    # 鳴らし始めの時刻の指定（2026-11-18）
+    t_delay_exact, t_delay_matches_padding, t_delay_together,
+    t_delay_together_error, t_delay_wait_controls, t_delay_player,
+    # 音のグループ（2026-11-18）
+    t_group_gain, t_group_pause, t_group_stop, t_group_ducking,
+    t_group_player,
+    # 鳴り終わりの知らせ（2026-11-18）
+    t_end_finished, t_end_stopped, t_end_player_poll, t_end_player_watch,
+    # 部屋をまたぐ音の自動の遮蔽（2026-11-18）
+    t_occ_geometry, t_occ_engine, t_occ_controls, t_occ_player,
+    # 耳介の選定（2026-11-18）
+    t_pinna_candidates, t_pinna_selection, t_pinna_elevation,
+    # 長いファイルを少しずつ読む（2026-11-18）
+    t_stream_matches_decode, t_stream_lifecycle, t_stream_error,
+    t_stream_player,
+    # 2026-11-18 のレビューの指摘
+    t_review4_cached_no_open, t_review4_stream_loop_clamp,
+    t_review4_stream_non_file, t_review4_push_ducking,
+    t_review4_set_space_occlusion, t_review4_occlusion_map_outside_lock,
+    # 2026-11-18 の全体のレビューの指摘
+    t_review5_close_releases_stream, t_review5_teleport_occlusion_jumps,
+    t_review5_route_avoids_closed_door, t_review5_callback_ducking,
 ]
 
 

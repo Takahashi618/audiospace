@@ -201,9 +201,16 @@ class BandFdnReverb(VectorFdnReverb):
     （`acoustics.shelf_filter`）。単一の倍率と1次ローパスの FdnReverb より、
     材質の音色をはっきり出せる。
 
-    遅延線はブロックより長くする（ブロック単位でまとめて計算する前提）。
-    小さい部屋では遅延を縮めるが、ブロック+1サンプルより短くはしない。
+    小さい部屋では遅延を縮めるが、MIN_LINE サンプルより短くはしない。
+    線の長さはブロックの大きさによらない（ブロックに合わせて伸ばすと、
+    ブロックの大きさで響きの大きさが変わった。1024 で約 0.9dB 小さい）。
+    ブロックが最短の線より長いときは、線より短い区切りに分けて計算する。
+    `block` は以前の呼び方との互換のために受け取り、使わない。
     """
+
+    #: 遅延線の最短の長さ（サンプル）。既定のブロック 512 に 1 を足した値。
+    #: 精密版の尾の大きさは、この長さの速い版に合わせて焼いてある
+    MIN_LINE = 513
 
     def __init__(self, sample_rate: int, rt60_bands, room_scale: float = 1.0,
                  width: float = 1.0, level: float = 1.0,
@@ -213,10 +220,10 @@ class BandFdnReverb(VectorFdnReverb):
         bands = np.maximum(np.asarray(rt60_bands, dtype=np.float64), 0.05)
         super().__init__(sample_rate, rt60=float(bands[3]),
                          room_scale=room_scale, damping=0.0, width=width)
-        # 短すぎる線は伸ばす（ブロック単位の計算が成り立つように）
+        # 短すぎる線は伸ばす
         lengths: list[int] = []
         for line in self._lines:
-            n = max(int(block) + 1, line.shape[0])
+            n = max(self.MIN_LINE, line.shape[0])
             # 小さい部屋で同じ長さの線が並ぶと金属的に響くので、重なったら
             # 空いている次の素数にする（互いに素な長さが滑らかな響きの前提）
             while n in lengths:
@@ -226,6 +233,7 @@ class BandFdnReverb(VectorFdnReverb):
             lengths.append(n)
         self._lines = [np.zeros(n, dtype=np.float32) for n in lengths]
         self._pos = [0] * len(lengths)
+        self._shortest = min(lengths)
         self.rt60_bands = bands
         self.level = float(level)
         # 帯域の形（低域・高域のシェルフ）は、平均の長さの線で作って全線で
@@ -261,6 +269,17 @@ class BandFdnReverb(VectorFdnReverb):
 
     def process(self, mono_block: np.ndarray) -> np.ndarray:
         x = np.asarray(mono_block, dtype=np.float32)
+        n = x.shape[0]
+        step = self._shortest
+        if n <= step:
+            return self._band_span(x)
+        # 最短の線より長いブロック。区切りの中では、書いた値を読み返さない
+        # ので、区切って計算しても一度に計算したのと同じ出力になる
+        return np.concatenate([self._band_span(x[i:i + step])
+                               for i in range(0, n, step)], axis=0)
+
+    def _band_span(self, x: np.ndarray) -> np.ndarray:
+        """最短の線以下の長さの区切りを、まとめて計算する。"""
         n = x.shape[0]
         taps = np.empty((self._n, n), dtype=np.float32)
         for k in range(self._n):
@@ -428,11 +447,11 @@ def reverb_from_spec(spec: dict, sample_rate: int) -> VectorFdnReverb:
         {"name": "...", "rt60": 秒, "room_scale": 倍率, "damping": 0〜0.95,
          "width": 0〜1, "level": 倍率}
 
-    値がおかしければ ValueError（問題点を日本語で）。
+    値がおかしければ ValueError（問題点をいまの言語で）。
     """
     problems = reverb_spec_problems(spec)
     if problems:
-        raise ValueError("、".join(problems))
+        raise ValueError(tr("、", "; ").join(problems))
     return VectorFdnReverb(
         sample_rate, rt60=float(spec["rt60"]),
         room_scale=float(spec.get("room_scale", 1.0)),

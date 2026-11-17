@@ -17,11 +17,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from demo.localization_app import list_hrtf_choices  # noqa: E402
-from demo.records import MIN_DIRECTIONS_FOR_RANKING, RecordStore  # noqa: E402
+from audiospace.records import MIN_DIRECTIONS_FOR_RANKING, RecordStore  # noqa: E402
 
 LOG_DIR = ROOT / "logs"
 OUT = Path(__file__).with_name("records_report.txt")
 _log: list[str] = []
+
+
+def mode_logs(mode: str) -> list[Path]:
+    """そのモードの結果のファイル（「モード_年月日_時刻.txt」）を名前の順に。
+
+    「calib_*.txt」で探すと、上下用の選定（calib_elev_…）まで拾ってしまう。
+    """
+    pattern = re.compile(rf"^{re.escape(mode)}_\d{{8}}_\d{{6}}\.txt$")
+    return sorted(p for p in LOG_DIR.glob(f"{mode}_*.txt")
+                  if pattern.match(p.name))
 
 
 def log(msg: str = "") -> None:
@@ -65,12 +75,12 @@ def session_brief(path: Path) -> str:
 
 def main() -> int:
     pool = [(str(p), label) for label, p in list_hrtf_choices() if p]
-    store = RecordStore()
+    store = RecordStore(ROOT / "logs" / "pinna_records.json")
 
     log("logs の内容")
     log("=" * 78)
-    for kind in ("quiz", "training", "calib"):
-        files = sorted(LOG_DIR.glob(f"{kind}_*.txt"))
+    for kind in ("quiz", "training", "calib", "calib_elev"):
+        files = mode_logs(kind)
         if not files:
             continue
         log("")
@@ -82,7 +92,7 @@ def main() -> int:
                 log(f"  {path.name}: 読めません ({exc!r})")
 
     imported = LOG_DIR / "imported_calib.txt"
-    calib_files = sorted(LOG_DIR.glob("calib_*.txt"))
+    calib_files = mode_logs("calib")
     if calib_files:
         names = set()
         if imported.exists():
@@ -120,7 +130,8 @@ def main() -> int:
                 f"うち判別可能な難易度は{rec.n_answered_hard}問")
 
     done = store.tested_tags()
-    untested = [label for tag, label in pool if tag not in done]
+    # 記録のタグはファイル名（subj_E.sofa）、候補はパス。ファイル名で比べる
+    untested = [label for tag, label in pool if Path(tag).name not in done]
     log("")
     log(f"未検証 {len(untested)}種類: "
         + ("、".join(x.replace("実測 Viking ", "") for x in untested[:10])

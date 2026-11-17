@@ -14,7 +14,8 @@
 同一セッション内での差だけを評価に使う。上達はチャンピオンの成績にも
 等しく効くので、差を取れば打ち消される。
 
-保存先: logs/pinna_records.json
+保存先は呼び出し側が決める（`RecordStore(path)`）。定位確認ツールは
+logs/pinna_records.json（前後用）と logs/pinna_records_elev.json（上下用）。
 """
 from __future__ import annotations
 
@@ -24,9 +25,8 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from audiospace.i18n import join_sentences, tr  # noqa: E402
+from .i18n import join_sentences, tr
 
-DEFAULT_PATH = Path(__file__).resolve().parents[1] / "logs" / "pinna_records.json"
 #: 取り違えの欄の呼び名（前後用の記録）
 FB_NAME = tr("前後", "front/back")
 #: これ未満の試行数では順位を主張しない
@@ -183,9 +183,11 @@ def _merge_records(a: PinnaRecord, b: PinnaRecord) -> PinnaRecord:
 class RecordStore:
     """戦績の読み書きと順位付け。"""
 
-    def __init__(self, path: Path | None = None,
+    def __init__(self, path: str | Path,
                  fb_name: str | None = None) -> None:
-        self.path = Path(path) if path else DEFAULT_PATH
+        """`path` は通算成績の JSON ファイル（無ければ空から始め、save で
+        作る）。ゲームなら利用者ごとの設定の場所に置く。"""
+        self.path = Path(path)
         self.fb_name = fb_name if fb_name is not None else FB_NAME
         self.records: dict[str, PinnaRecord] = {}
         #: 読めなかったときの説明（空なら問題なし）。アプリは起動時に「状況」の

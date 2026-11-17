@@ -5,6 +5,10 @@ AUDIOSPACE_SILENT=1 は内部で設定するので、環境変数の指定を覚
 （AUDIOSPACE_LANG=ja。英語の表示は GUI構成のテストが別のプロセスで調べる）。
 
     python -X utf8 tests\\run_all.py
+    python -X utf8 tests\\run_all.py --skip-gui   GUI構成のテストを省く
+
+`--skip-gui` は wxPython の無い環境（自動テストの macOS と Linux）のため。
+省いたことは結果の行に書く。
 """
 from __future__ import annotations
 
@@ -23,13 +27,28 @@ SUITES = [
 ]
 
 
-def main() -> int:
+GUI_SUITE = "run_app_tests.py"
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    unknown = [a for a in argv if a != "--skip-gui"]
+    if unknown:
+        print(f"使い方: run_all.py [--skip-gui]（知らない指定: {unknown}）"
+              f" (usage: run_all.py [--skip-gui])")
+        return 2
+    skip_gui = "--skip-gui" in argv
     env = dict(os.environ, AUDIOSPACE_SILENT="1", AUDIOSPACE_LANG="ja")
     total_passed = 0
     total_all = 0
     failed_suites: list[str] = []
+    skipped: list[str] = []
 
     for name, label in SUITES:
+        if skip_gui and name == GUI_SUITE:
+            print(f"{label} ({name}): 省いた (skipped, --skip-gui)")
+            skipped.append(name)
+            continue
         path = Path(__file__).with_name(name)
         result = subprocess.run(
             [sys.executable, "-X", "utf8", str(path)],
@@ -54,8 +73,10 @@ def main() -> int:
               f" (total {total_passed}/{total_all}, FAILED)")
         return 1
     # 英語の利用者のために英語も添える（マニュアルの英語版がこの行を説明する）
-    print(f"合計 {total_passed}/{total_all}、全件合格"
-          f" (total {total_passed}/{total_all}, all passed)")
+    note = (f"（{', '.join(skipped)} は省いた）" if skipped else "")
+    note_en = (f", skipped {', '.join(skipped)}" if skipped else "")
+    print(f"合計 {total_passed}/{total_all}、全件合格{note}"
+          f" (total {total_passed}/{total_all}, all passed{note_en})")
     return 0
 
 

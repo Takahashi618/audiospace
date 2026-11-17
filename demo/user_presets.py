@@ -107,13 +107,13 @@ class UserPresetStore:
     def put_space(self, name: str, spec: dict) -> bool:
         """空間を保存する（同じ名前は上書き）。上書きなら True。
 
-        問題があれば ValueError（問題点を日本語で）。保存には失敗しても、
+        問題があれば ValueError（問題点をいまの言語で）。保存には失敗しても、
         メモリ上の内容は変えない。
         """
         name = name.strip()
         problems = name_problems(name) + space_spec_problems(spec)
         if problems:
-            raise ValueError("、".join(problems))
+            raise ValueError(tr("、", "; ").join(problems))
         replaced = name in self.spaces
         before = dict(self.spaces)
         self.spaces[name] = dict(spec, name=name)
@@ -139,7 +139,7 @@ class UserPresetStore:
         name = name.strip()
         problems = name_problems(name) + reverb_spec_problems(spec)
         if problems:
-            raise ValueError("、".join(problems))
+            raise ValueError(tr("、", "; ").join(problems))
         replaced = name in self.reverbs
         before = dict(self.reverbs)
         self.reverbs[name] = dict(spec, name=name)

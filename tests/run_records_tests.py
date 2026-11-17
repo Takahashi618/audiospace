@@ -1,4 +1,4 @@
-"""耳介の通算戦績（demo/records.py）のテスト。
+"""耳介の通算戦績（audiospace/records.py）のテスト。
 
 要点は「聞き手の上達による交絡を、基準との差で打ち消せているか」。
 ここが効いていないと、後から試した耳介ほど有利になってしまう。
@@ -22,7 +22,7 @@ os.environ["AUDIOSPACE_LANG"] = "ja"
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from demo.records import (MIN_TRIALS_FOR_RANKING, PinnaRecord,  # noqa: E402
+from audiospace.records import (MIN_TRIALS_FOR_RANKING, PinnaRecord,  # noqa: E402
                           RecordStore)
 
 OUT = Path(__file__).with_name("records_test_result.txt")

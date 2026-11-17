@@ -116,6 +116,9 @@ nearest measured direction.
 - The up/down tests work only when a measured Viking pinna is chosen. The
   default HRTF asset and the synthetic HRIR are horizontal only, so the app
   refuses to start them
+- A game using the library can use the full sphere of the default pinna E
+  (1513 directions, the SOFA measurement unchanged) with
+  `SpatialPlayer.open(full_sphere=True)`. It does not need sofar
 - Down goes only to 45 degrees, because the measurements stop there
 - This is the cue where individual pinnae differ most. Choose a pinna for up
   and down (Ctrl+F8) finds one that suits you. In the records so far, pinna E
@@ -195,6 +198,17 @@ reflection.
   the sound could lean to one side). The time gap keeps its true value
 - The reflection is not sent to the reverb (it would be doubled). The
   reference sound gets one too
+- The engine does the delaying (`play(..., delay_s=)`). The reference
+  sound, the question sound and the reflections are played inside
+  `together()`, so they all count from the same moment
+- **The way it plays changed on 2026-11-18.** Before, it played a copy with
+  silence added in front, and when the delay was shorter than about 11
+  milliseconds (level and 45 degrees down), the start of the reflection was
+  partly faded in. Now it starts exactly as the data starts. Also, the
+  sounds were started separately, so now and then only the reflection came
+  about 11 milliseconds late. On the same day the fade-in of sounds played
+  without a delay was removed too (see "Common to both" below), so the
+  direct sound and the reflection now start with the same shape
 - Where: `floor_image` and `_play_one` in `demo/localization_app.py`
 
 ### 6. Directional reflections of a space (library)
@@ -237,6 +251,13 @@ it will not sound right.
 - The question repeats until you answer with the keypad (numpad 0, on at
   start). Not processing, but if speech covers the sound, you can just wait to
   hear it again
+- Onset: a sound plays as its data, from the first sample (library).
+  **Changed on 2026-11-18.** Before, sounds played without a delay (the
+  direct sound, the reference sound and short-delay reflections) faded in
+  from gain 0 over their first 11 milliseconds or so. The noise bursts and
+  the beep had a weakened attack, and the click (a single first sample) was
+  silent. **Listening records from before that date were made with a
+  different onset**
 
 ## A problem fixed: sounds straight up got front/back processing from their nominal azimuth
 

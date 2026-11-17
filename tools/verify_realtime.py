@@ -87,7 +87,7 @@ def run(n_sources: int, seconds: float, audible: bool,
             f"worst={player.worst_ms:5.2f} ms "
             f"({player.worst_ms / budget * 100:5.1f}%) "
             f"first={player.first_ms:5.2f} ms")
-    player.stop()
+    player.close()
     return line
 
 

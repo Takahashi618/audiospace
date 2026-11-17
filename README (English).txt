@@ -1,4 +1,4 @@
-﻿audiospace 0.7.1 - README (English)
+﻿audiospace 0.8.0 - README (English)
 
 audiospace is a 3D audio component (a library) for games and tools for blind and visually impaired people, meant to be heard on headphones.
 It comes with the Localization Tool, which lets you check which direction sounds come from and how rooms sound. Both work with the keyboard and a screen reader (NVDA, PC-Talker) alone.
@@ -24,7 +24,7 @@ There are 16 files and 5 folders.
 - The tests folder has tests that check that everything works.
 - The tools folder has tools for rebuilding the data and documents. You do not need it to use audiospace.
 
-When you use the Localization Tool, two more folders appear here: logs (your listening results) and settings (the spaces and reverbs you design).
+When you use the Localization Tool, two more folders appear here: logs (your listening results) and settings (the spaces and reverbs you design, and your choices in the settings area).
 
 
 == First three steps

@@ -110,8 +110,24 @@ class BinauralConvolver:
         fading in from the old occupant's direction.  The previous
         occupant's overlap tail is untouched: it is already summed into the
         shared output tail and plays out where it was.
+
+        With an HRIR longer than one block, the previous occupant's input
+        may still sit in the row's delay line, and would be rendered at the
+        new occupant's direction.  The engine avoids such rows (see
+        `row_sounding`); when it cannot, the leftover input is dropped here.
         """
         self._was_rendered[row] = False
+        if self._fdl is not None and self._history[row] > 0:
+            self._fdl[row] = 0
+            self._history[row] = 0
+
+    def row_sounding(self, row: int) -> bool:
+        """Whether `row` still has input in its delay line.
+
+        Only possible with an HRIR longer than one block, for a few blocks
+        after the row's last input.
+        """
+        return self._fdl is not None and bool(self._history[row] > 0)
 
     def process(self, blocks: np.ndarray, direction_idx: np.ndarray,
                 active: np.ndarray | None = None) -> np.ndarray:

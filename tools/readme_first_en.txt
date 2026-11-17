@@ -24,7 +24,7 @@ There are 16 files and 5 folders.
 - The tests folder has tests that check that everything works.
 - The tools folder has tools for rebuilding the data and documents. You do not need it to use audiospace.
 
-When you use the Localization Tool, two more folders appear here: logs (your listening results) and settings (the spaces and reverbs you design).
+When you use the Localization Tool, two more folders appear here: logs (your listening results) and settings (the spaces and reverbs you design, and your choices in the settings area).
 
 
 == First three steps

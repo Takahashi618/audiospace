@@ -45,7 +45,7 @@ The author did not write the code. The author's part was:
 - Checking the behaviour and deciding what to fix.
 - Publishing, answering questions and maintenance.
 
-The code is checked by 241 automated tests and by the author on real
+The code is checked by 298 automated tests and by the author on real
 hardware, but like any code it may still contain mistakes. It comes without
 warranty.
 
@@ -58,9 +58,9 @@ under the MIT License.
 There are two. Neither contains the author's listening records (`logs/`)
 or working notes.
 
-- **wheel** (`audiospace-<version>-py3-none-any.whl`, about 0.3 MB): for
+- **wheel** (`audiospace-<version>-py3-none-any.whl`, about 1.8 MB): for
   people who only use the library. It contains `audiospace/` with the
-  default HRTF, `LICENSE` and `ATTRIBUTION.md`. The 21 measured HRTF SOFA
+  default HRTFs (horizontal and full sphere), `LICENSE` and `ATTRIBUTION.md`. The 21 measured HRTF SOFA
   files and the baked reverb IRs are not included
 - **zip** (`audiospace-<version>.zip`, about 70 MB): the full source. The
   library, the listening app (`demo/`), the tests, the tools, the 21 SOFA
@@ -73,8 +73,8 @@ or working notes.
 Installing the wheel (use the real file name):
 
 ```
-python -m pip install audiospace-0.7.1-py3-none-any.whl
-python -m pip install "audiospace-0.7.1-py3-none-any.whl[playback]"
+python -m pip install audiospace-0.8.0-py3-none-any.whl
+python -m pip install "audiospace-0.8.0-py3-none-any.whl[playback]"
 ```
 
 The second line is for playing on a real device. With the wheel alone there
@@ -109,9 +109,10 @@ The only required dependencies are numpy and scipy. Add `.[playback]`
 (sounddevice / soundfile) to play on a device, or `.[full]` for everything.
 For the Localization Tool (`demo/`), use `.[app]` (wxPython /
 accessible_output2 / sounddevice / sofar). The default HRTF
-(`audiospace/data/default_horizontal.npz`, about 205 KB) is package data
-inside the wheel, so it is bundled when you freeze the package with
-PyInstaller. **A CC BY 4.0 credit is required when you distribute it** (see
+(`audiospace/data/default_horizontal.npz`, about 205 KB) and the full sphere
+of the same pinna (`audiospace/data/default_sphere.npz`, about 1.4 MB) are
+package data inside the wheel, so they are bundled when you freeze the
+package with PyInstaller. **A CC BY 4.0 credit is required when you distribute it** (see
 the text of `attribution()` and `ATTRIBUTION.en.md`).
 
 ## Usage
@@ -129,13 +130,51 @@ player.set_sound_gain_db(h, -6.0)                 # gain in dB
 player.stop_sound(h, fade_ms=30)                  # stop with a fade-out
 player.pause(); player.resume()                   # pause and resume everything
 print(player.status())                            # status line to read aloud
-player.stop()
+player.close()                                    # finish (or use `with`)
 ```
 
 Files passed to `play()` are decoded once and cached, so the same sound
 effect never reads the disk again. Finished one-shot sounds are collected by
 the next `play()`, so you do not need to worry about running out of slots.
 To pause a single sound, use `pause_sound(h)` / `resume_sound(h)`.
+
+**Long sounds are read a little at a time** (`stream`). Decoding a whole
+three-minute 48 kHz stereo track takes about 66 MB. Files too large for the
+cache (`sound_cache_max_bytes`, 16 MB by default: about 44 s of 48 kHz
+stereo) are turned into a `FileStreamSource` by `play()` automatically,
+which plays while a thread reads two seconds ahead. With a one-minute track,
+`play()` went from 488 ms to 7 ms and memory from 46 MB to 0.8 MB (measured).
+A short sound already in the cache is played as it is, without opening the
+file to check it (a footstep played hundreds of times never reads the
+disk). `stream=True` works only with a file (on an array or a source object
+it raises ValueError).
+While a file is streamed it stays open. When you are done with the player,
+call `close()` (leaving a `with` block does the same): it releases every
+sound and closes the files, so they can then be deleted or replaced.
+`stop()` only stops the output and keeps the sounds (`start()` goes on from
+there).
+
+```python
+player.play("bgm.ogg", spatialise=False, loop=True)   # streamed if it is long
+player.play("bgm.ogg", spatialise=False, stream=True)  # streamed even if short
+player.play("voice.wav", stream=False)                 # decoded whole even if long
+```
+
+- It reads wav, flac, ogg and mp3 (soundfile, or miniaudio if that fails).
+  If the file's rate differs, samplerate converts it a little at a time (the
+  values match converting it whole). Without samplerate, a file at another
+  rate is decoded whole (with `stream=True`, ValueError)
+- `loop_start` / `loop_end` (in the file's frames) loop without a gap. It
+  cannot be combined with a `rate` other than 1 (that is decoded whole)
+- The first 0.5 s is read inside `play()`, so the start never drops out. If
+  reading falls behind, that block is silent and `status()` says "silent N
+  blocks because a file was not read in time". The read-ahead is
+  `player.stream_buffer_seconds` (2 s by default)
+- The file stays open while it plays. If it cannot be read any more, only
+  that sound is taken out (its end notice is `SOUND_ERROR`)
+- In the low-level API, pass `FileStreamSource(path, engine rate,
+  channels=1 or 2)` to `add_source`. `audio_file_info(path)` gives the
+  frames, rate and channels without decoding
 
 ```python
 player.set_sound_lowpass(h, 0.7)              # behind a wall (muffled)
@@ -157,6 +196,121 @@ time. Write a crossfade as two ramps.
 **Playback rate** (`rate`) changes pitch and tempo together. Use it for
 varied footsteps or pitched cues. Different rates share the same cache.
 
+**Start time** (`delay_s`) starts a sound that many seconds later, to the
+sample. A footstep pattern, a rhythm cue or an echo needs no timer in the
+game. Sounds whose offsets must stay exact go inside
+`with player.together():`. Sounds played inside wait until the with-block
+ends, and all count from the same moment.
+
+```python
+for i in range(4):                                # four steps, 0.4 s apart
+    player.play("step.wav", position=(0.0, 2.0 + i, 0.0), delay_s=0.4 * i)
+
+with player.together():                           # direct sound and floor reflection
+    player.play("bell.wav", position=(0.0, 4.0, 0.0))
+    # with the floor 3 m below the ears, the reflection comes from the mirrored
+    # position, late by the 3.2 m longer path
+    player.play("bell.wav", position=(0.0, 4.0, -6.0), gain=0.6,
+                delay_s=0.0094)
+```
+
+- Without `together()`, an audio block may come between two `play()` calls,
+  and only the later sound starts one block late (about 11 ms at 512
+  frames). Reflections and echoes work on offsets shorter than a block, so
+  the error is easy to hear
+- If an exception is raised inside `together()`, the sounds played inside
+  are dropped unplayed
+- A waiting sound holds a source slot. Stopping it with `stop_sound()`
+  removes it at once, even with a fade
+- While a sound waits, its gain and muffling ramps do not run.
+  `set_sound_gain(h, 1.0, ramp_ms=3000)` called while it waits makes it
+  grow over 3 seconds from when it starts. While it is paused with
+  `pause_sound()`, or everything is paused with `pause()`, the remaining
+  wait does not shrink either
+- Delayed or not, a sound starts exactly as its data starts (see "A sound
+  starts as its data" below)
+
+**Sound groups** (`group`) give a name to a set of sounds, such as effects,
+music or voice, and set the volume, pause, stop and ducking for the whole
+set. A group's volume multiplies each sound's own gain, distance and fades.
+An "effects volume" on a settings screen is one call, without changing the
+playing sounds one by one.
+
+```python
+player.set_group_gain("sfx", 0.7)                 # effects volume (also before playing)
+player.play("step.wav", position=(1.0, 2.0, 0.0), group="sfx")
+player.play("bgm.ogg", spatialise=False, loop=True, group="music")
+player.set_ducking("music", by="voice", db=-12)   # lower the music while a voice plays
+player.play("line01.wav", spatialise=False, group="voice")
+player.pause_group("music"); player.resume_group("music")
+player.stop_group("sfx", fade_ms=30)              # stop all effects
+```
+
+- `set_group_gain(name, gain, ramp_ms=)` and `set_group_gain_db`. The ramp
+  runs on the audio thread, as with `set_sound_gain`. `group_gain(name)`
+  returns the volume set (where a ramp is heading). A name not used yet has
+  volume 1
+- `pause_group` / `resume_group`: stops the sounds in place, and on resume
+  they continue (the first block after resuming fades in). A sound paused
+  on its own with `pause_sound()` stays paused when the group resumes. While
+  the group is paused, the wait of a delayed sound does not shrink either
+- `stop_group(name, fade_ms=)` returns the handles it stopped.
+  `group_sounds(name)` lists the sounds now in the group, and
+  `set_sound_group(h, name)` moves a sound to another group (None for no
+  group)
+- **Ducking** (`set_ducking(name, by=, db=-12, attack_ms=80, release_ms=400)`):
+  while any sound of the `by` group plays, the group is lowered by `db` (a
+  push source from `open_stream_source` counts as playing only while
+  samples written to it are left; while nothing is written, it does not
+  duck. A `CallbackSource` does not duck while its function returns
+  silence). It
+  takes `attack_ms` to go down and `release_ms` to come back. It is a factor
+  separate from the volume set with `set_group_gain`, so the player's
+  volume setting is kept. `by` may also be several names. `clear_ducking`
+  removes it
+- For a voice that does not go through the engine, such as a screen
+  reader, lower the group by hand with `hold_ducking("music", True)` and
+  `hold_ducking("music", False)` (set the depth and speed first with
+  `set_ducking("music", db=-12)`)
+- Sounds in no group sound exactly as before, and cost the same
+
+**End notices** (`on_end`) call a function once when a sound has ended. Use
+them to play the next line when a line of speech ends, or to move on when
+an effect is over. The function gets a `SoundEnd` (`handle`, `reason`,
+`detail`, `at_s`).
+
+```python
+from audiospace import SOUND_FINISHED
+
+def next_line(event):
+    if event.reason == SOUND_FINISHED:           # it played to the end
+        player.play("line02.wav", spatialise=False, group="voice")
+
+player.play("line01.wav", spatialise=False, group="voice", on_end=next_line)
+
+# call from the game's loop or timer (every 20 to 50 ms or so)
+player.poll_ends()
+```
+
+- `reason` is `SOUND_FINISHED` (the data played to the end),
+  `SOUND_STOPPED` (stopped with `stop_sound`, `stop_group` and so on; with a
+  fade, once it has faded out) or `SOUND_ERROR` (taken out after an error in
+  the source; the reason is in `detail`)
+- The function is never called on the audio thread. It runs on the thread
+  that calls `poll_ends()`, so when you call that from a GUI timer, the
+  function may touch the widgets
+- Without a loop of your own, use `player.watch_ends()`. It delivers on a
+  thread of the player's. To hand over to a GUI thread, use
+  `watch_ends(dispatch=wx.CallAfter)` (called as `dispatch(function,
+  notice)`). `stop()` ends it
+- If a function raises, the other functions are still called. The count
+  and the last reason are in `status()`
+- If you pass `on_end` but call neither `poll_ends` nor `watch_ends`, the
+  functions are never called. When notices older than 2 seconds are left,
+  `status()` says so ("end notices not delivered")
+- In the low-level API: `add_source(..., notify_end=True)` and
+  `take_ended()`
+
 The end of the engine has a **limiter** (on by default). It lowers only
 the blocks that would go over full scale when many sources overlap, so there
 is no harsh clipping on headphones. How often it acted appears in
@@ -167,12 +321,26 @@ If you do not give an HRTF, the **measured HRTF chosen in the listening
 tests** (Viking pinna E, horizontal plane only, 205 KB) loads automatically.
 Without the asset it falls back to the synthetic one.
 
+To render sounds above and below too, use `full_sphere=True` for the **full
+sphere** of the same pinna (1513 directions, from 45 degrees below to straight
+up, about 1.4 MB). It is the SOFA measurement saved as npz unchanged, and it
+loads without sofar. If the full-sphere asset is missing, it raises
+`FileNotFoundError` (silently using the horizontal or synthetic one instead
+would hide that up and down cannot be heard). Pinna E was chosen in the
+front/back tests, and the pinna that suits up and down differs from person
+to person (`CUES.en.md`). If it does not suit you, choose another pinna with
+`sofa_path`.
+
 ```python
 from audiospace import default_hrir, default_is_measured, attribution
 
 hrir = default_hrir(48000)      # already converted to the output rate
 default_is_measured()           # measured, or fell back to synthetic?
 print(attribution())            # credit to show when distributing (CC BY 4.0)
+
+player = SpatialPlayer.open(full_sphere=True)     # open with the full sphere
+sphere = default_hrir(48000, full_sphere=True)    # load only the full sphere
+print(attribution(full_sphere=True))              # its credit text
 ```
 
 ### Low-level API (no device)
@@ -479,6 +647,63 @@ concrete room through a street between buildings to an empty road, clapping
 in each place, and writes the result to `demo/out/space_walk.wav` (no device
 is opened).
 
+### Sounds through walls (automatic occlusion)
+
+Using the spaces registered with `set_spaces` (or, with no registration, the
+space given to `set_space`), a sound behind a wall is muffled and lowered
+automatically. With neither, nothing changes, so `status()` says "there is no
+space". When the line from a source to the
+listener passes through a closed face (wall, floor, ceiling), that face's
+material decides how much.
+
+```python
+from audiospace import Opening
+
+kitchen_door = Opening((4.9, 2.0, 0.0), (5.1, 2.9, 2.0), name="kitchen_door")
+player.set_spaces([living, kitchen, hall], early=True, late=True)
+player.set_auto_occlusion(openings=[kitchen_door])
+player.set_opening("kitchen_door", "wooden_door")   # close the door
+player.set_opening("kitchen_door")                  # open it
+print(player.sound_occlusion(h).walls)              # materials passed through
+```
+
+- How much it drops (with the muffling included, measured with broadband
+  noise): about 22 dB through concrete, brick or stone, 14 dB through a
+  wooden door or wall, 11 dB through plasterboard, 10 dB through glass and 3
+  dB through a curtain. That is far less than real sound insulation (about 50
+  dB for concrete). Hearing a muffled sound through a wall is itself a cue,
+  so it stays audible. The values are per material category
+  (`audiospace.OCCLUSION_BY_CATEGORY`, `material_occlusion(name)`).
+  `materials={"wooden_door": (6.0, 0.4)}` overrides one material, and
+  `strength=` scales the whole effect
+- Faces in nearly one plane (within 0.5 m), such as the walls of two
+  neighbouring rooms, count as one wall (the stronger value). With one room
+  in between, it drops by two walls
+- Doors, windows and stairwells are holes cut with `Opening` (a box around
+  the hole). Place the box so that it covers the wall's thickness (so the
+  faces of the rooms on both sides are inside it). A line through an open
+  hole is not blocked. With a `material`, it is a closed door or window;
+  `set_opening` opens and closes it. A whole face set to "open" passes sound
+  like a hole
+- **Going round**: when the straight line is blocked by walls, it looks for
+  a way through open faces and holes. If that is louder, the sound comes from
+  the direction of the listener's doorway, at the length of the way round.
+  The sharper the turn, the lower and more muffled. A sound round the corner
+  of a corridor is heard from the room's doorway. When there is both a short
+  way through a closed door and a way round through open doorways, the
+  louder one is used
+- It is occluded from its very start (a sound starting behind a wall does
+  not seem to open up and then close). When a source or the listener moves,
+  it changes smoothly, at 30 dB per 100 ms. After `teleport_listener` it takes
+  the new value at once (nothing of the old place is left)
+- It combines with the muffling set with `set_sound_lowpass` (it does not
+  replace it). Sounds played with `play(..., occlude=False)` are never
+  occluded (a guide beacon, say), nor are sounds that move with the listener
+  (`relative=True`) and flat sounds
+- Off by default; when off, everything sounds as before. With 64 sources
+  and a listener walking all the time, a block takes 1.8 ms instead of 0.98
+  ms (up to 16 sources are rechecked per block; the rest in the next one)
+
 ## Telling front from back (important)
 
 A list of the processing applied to sources as front/back and up/down cues
@@ -516,7 +741,7 @@ wobble is not needed.
 ### Aid 2: training
 
 People learn to hear the difference, so give them the chance.
-`TrainingSession` in `demo/quiz.py` uses a weighted draw that brings back
+`TrainingSession` in `audiospace/quiz.py` uses a weighted draw that brings back
 directions answered wrongly more often, and weighs front-back confusions
 especially heavily. Right after a wrong answer it plays the correct direction
 again so the player can compare.
@@ -530,6 +755,54 @@ sound.
 ```python
 player.engine.set_hrir(other_hrir)     # swap without stopping playback
 ```
+
+#### Choosing a pinna inside a game (`PinnaSelection`)
+
+The questions and scoring (`audiospace.quiz`) and the running totals per
+pinna (`audiospace.records`) are part of the library and depend on neither
+a GUI nor audio output. `PinnaSelection` wraps the same flow as the
+listening app's "choose a pinna" (F8) in a form a game screen can use.
+
+```python
+from audiospace import (Difficulty, PinnaSelection, RecordStore,
+                        load_pinna, viking_candidates)
+
+candidates = viking_candidates("assets/hrtf/viking")    # [(tag, name)]
+store = RecordStore(settings_dir / "pinna_records.json")
+selection = PinnaSelection(player, candidates, store,
+                           difficulty=Difficulty.EIGHT)
+speak(selection.intro())                    # how many, the reference, progress
+while not selection.finished:
+    if selection.prepare():                 # switched to the next pinna
+        speak(selection.round_text())       # "Pinna 2 of 3."
+    selection.play(sound)                   # the question sound (also replays)
+    selection.answer(wait_for_answer())     # direction as seen from you now
+speak(selection.finish())                   # add to the totals, save, restore the HRTF
+
+best = selection.best()                     # the best overall (tag, name)
+if best is not None:
+    player.engine.set_hrir(load_pinna(best[0], player.engine.sample_rate))
+```
+
+- One round compares a few pinnae (about 48 questions in all). **The current
+  best is always included as the reference**, and the rest are pinnae not yet
+  tested. Listeners improve over time, so only the difference from the
+  reference within one round counts for the ranking. All of them can be
+  tested over several rounds
+- The question sound plays in the direction seen from the listener, at a
+  position that moves with the listener. If the listener has turned, use
+  `answer(direction, listener_yaw_deg=current_heading)`. For a replay, call
+  `play` again (the previous sound stops); `note_replay()` counts it
+- To choose a pinna for up and down, use `mode=MODE_ELEVATION` (answer the
+  height at the front with `answer_elevation(elevation)`; it needs full-sphere
+  SOFA data). Keep its totals in a separate file from the front/back ones
+- To stop early, call `cancel()` (nothing is added to the totals, and the
+  HRTF is restored). With `preload=True`, all pinnae of the round are loaded
+  at the start (no waiting in the middle)
+- The pinna data (SOFA) is not in the wheel. Ship `assets/hrtf/viking` from
+  the zip with your game (CC BY 4.0; the credit text is "using the SOFA files
+  unchanged" in ATTRIBUTION.en.md). Reading SOFA needs sofar. An npz baked
+  with `tools/bake_hrtf_asset.py --pinna B` can also be a candidate
 
 ### Volume alone is not a cue
 
@@ -606,7 +879,11 @@ in the horizontal-only set.
 cost almost the same** (3.4 ms and 3.2 ms with 128 sources; see "Measured
 performance" below). The table above was measured before that. There is no
 longer a need to restrict for speed; if you do not use elevation, the only
-benefit left is smaller loading and memory.
+benefit left is smaller loading and memory. Measured on 2026-11-17 with 64
+sources and head wobble, the bundled horizontal set (216 directions) and the
+full sphere (1513 directions) both took about 0.9 ms per block. A 3D game
+that uses up and down can simply open the player with
+`SpatialPlayer.open(full_sphere=True)`.
 
 ## Measured performance (on this machine)
 
@@ -734,12 +1011,67 @@ explicitly.
 ### When the output device disappears
 
 Unplugging USB audio or changing the default device kills the stream
-silently. **Silence is the one failure a blind user cannot notice**, so call
-`player.check_device()` about once a second from the game loop. When it
-returns true, the start of `status()` says so: read it aloud and reconnect
-with `player.reopen()` (playing sounds are kept). Only when the replacement
-device runs at a different rate does it raise `RuntimeError`; then create the
-player again.
+silently. **Silence is the one failure a blind user cannot notice**, so let
+the player watch the device and reconnect by itself.
+
+```python
+from audiospace import DEVICE_LOST, DEVICE_RATE_CHANGED, DEVICE_RESTORED
+
+# about once a second, from the game loop or a UI timer
+event = player.poll_device()
+if event is not None:
+    speak(event.message)                  # text to read aloud (current language)
+    if event.kind == DEVICE_RATE_CHANGED:
+        player = SpatialPlayer.open()     # a device at another rate: rebuild
+```
+
+When the device is lost, `poll_device()` reconnects with `reopen()` (playing
+sounds are kept); if that fails, it keeps trying every
+`player.device_retry_s` (3) seconds. It returns an event (`DeviceEvent`)
+only when the state changes: reconnected (`DEVICE_RESTORED`), lost and not
+back yet (`DEVICE_LOST`, only once however often it fails), or the new device
+runs at another rate (`DEVICE_RATE_CHANGED`). If the original device comes
+back, a later attempt reconnects and gives `DEVICE_RESTORED`.
+
+To avoid writing the loop, `player.watch_device(on_event)` does the same on
+another thread (`stop()` or `unwatch_device()` ends it). `on_event` is called
+on the watching thread, so hand UI work over to the UI thread (`wx.CallAfter`
+in wxPython). An app with a window is easier to write with `poll_device()`
+from a UI timer (the Localization Tool works this way).
+
+To build it yourself, check with `player.check_device()` and reconnect with
+`player.reopen()`. When the replacement device runs at a different rate, it
+raises `DeviceRateError` (a kind of `RuntimeError`).
+
+### Broken sources and bad values
+
+When the `read()` of a source you wrote raises an exception or returns an
+array of the wrong shape, only that source is removed and counted
+(`status()` reports "sources removed after errors" with the reason). The
+other sounds keep playing.
+
+Passing NaN or infinity as a position, gain, muffling, reverb send, or
+listener position or angle raises `ValueError` at once. Accepting it would
+turn the whole output into bad numbers while that source exists, and every
+sound would go silent.
+
+An audio file that cannot be read raises `DecodeError` (a kind of
+`ValueError`), with the file name and the reason in the message.
+
+### A sound starts as its data
+
+A newly played sound plays from its first sample at the gain you set (no
+fade-in). The attack of a footstep or a click reaches the ear as it is.
+
+- Until 2026-11-18, the first block (about 11 ms) faded in from gain 0. A
+  click that was a single first sample was silent, and the attack of other
+  sounds was weakened
+- Data cut in the middle of a waveform clicks at the start, as in any other
+  player. Give the data a short fade, or play it with `gain=0.0` and raise it
+  with `set_sound_gain(h, 1.0, ramp_ms=10)` (to leave no gap, make both
+  calls inside `together()`)
+- Gain changes, `stop_sound(h, fade_ms=)` and resuming after
+  `pause_sound()` still change smoothly within a block, as before
 
 ### Source slots have a fixed cost
 
@@ -757,16 +1089,16 @@ Run this in the audiospace folder:
 python -X utf8 tests\run_all.py
 ```
 
-It runs 5 suites, 241 tests in all (the silent setting is applied
+It runs 5 suites, 298 tests in all (the silent setting is applied
 internally). The test output is in Japanese, and the last line also says
 "all passed" in English. To run them one by one:
 
 ```
-set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_tests.py         (domain, 109)
+set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_tests.py         (domain, 167)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_motion_tests.py  (head wobble, 11)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_quiz_tests.py    (quiz, 39)
-set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_records_tests.py (records, 20)
-set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_app_tests.py     (GUI structure, 49)
+set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_records_tests.py (records, 21)
+set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_app_tests.py     (GUI structure, 60)
 ```
 
 They check numerically that the sound really carries spatial information:
@@ -781,6 +1113,34 @@ layout matches the azimuths geometrically. One of them starts the app in
 English in a separate process (`tests/en_probe.py`) and checks that no
 Japanese is left in what the user sees.
 
+Without wxPython, `python -X utf8 tests\run_all.py --skip-gui` runs the rest
+and leaves out the GUI suite (the last line says so).
+
+### Automatic tests (GitHub Actions)
+
+On the GitHub repository, `.github/workflows/tests.yml` runs the tests
+without sound on every push to main and every pull request (this file is
+not in the zip).
+
+- Windows, macOS and Linux, with Python 3.10 (the oldest supported) and
+  3.13: six runs
+- The GUI suite and the English text check run on Windows only; macOS and
+  Linux use `--skip-gui`
+- The detection of the OS display language (`tests/check_language.py`) is
+  checked on each OS. On macOS it is also checked after switching the
+  display language to Japanese
+- The per-test result files (`tests/*_result.txt`) are kept as Artifacts,
+  whether the run passed or failed
+
+In a folder where the repository is checked out, GitHub CLI (gh) shows the
+results as text.
+
+```
+gh run list --workflow tests.yml        the list of runs
+gh run view NUMBER --log-failed         the output where it failed
+gh run download NUMBER                  fetch the result files
+```
+
 ## The Localization Tool (listening app)
 
 ```
@@ -792,6 +1152,14 @@ screen readers. Install what it needs with `python -m pip install -e
 ".[app]"`. How to use it is in `Manual (English).html` (the same content as
 `Manual (English).txt`); in the app, F1 opens the keyboard help. In the zip
 you can start it with `Start Localization Tool.bat`.
+
+The choices in the settings area (HRTF, sound type, head wobble, reverb,
+space, furniture amount, number of people, precise reverb, difficulty and
+front/back emphasis) are saved in `settings/app_settings.json` and carry over
+to the next start, kept by name rather than by position. Head tilt, up/down
+emphasis and floor reflection always start off, and repeat playback and the
+reference sound always start on (their state at start is fixed). To get the
+first state back, close the tool and delete that file.
 
 - F2 preview (the sound circles around you) / F3 quiz / F7 training / F8
   choose a pinna
@@ -905,9 +1273,10 @@ the latter needs a paid licence for commercial use.
 
 ### Included data
 
-`audiospace/data/default_horizontal.npz` (the default HRTF) and the SOFA
-files in `assets/hrtf/viking/` are from the **Viking HRTF Dataset v2 (CC BY
-4.0)**. Commercial use is allowed, but **a credit is required**. When you
+`audiospace/data/default_horizontal.npz` (the default HRTF),
+`audiospace/data/default_sphere.npz` (the full-sphere default HRTF) and the
+SOFA files in `assets/hrtf/viking/` are from the **Viking HRTF Dataset v2 (CC
+BY 4.0)**. Commercial use is allowed, but **a credit is required**. When you
 distribute them in your product, show the text in `ATTRIBUTION.en.md` there
 too (the text is also returned by `attribution()`).
 

@@ -39,7 +39,7 @@ audiospace のコードは、AI（Anthropic の Claude）が書きました。�
 - 動作の確認と、直すか直さないかの判断
 - 公開、問い合わせへの対応、保守
 
-コードは自動テスト（241件）と作者の実機での確認で検証しています。それでも、
+コードは自動テスト（298件）と作者の実機での確認で検証しています。それでも、
 人が書いたコードと同じく、誤りが残っている可能性があります。無保証です。
 
 日本の文化庁や米国の著作権局の考え方では、AI が書いた部分には著作権が
@@ -61,7 +61,7 @@ The author did not write the code. The author's part was:
 - Checking the behaviour and deciding what to fix.
 - Publishing, answering questions and maintenance.
 
-The code is checked by 241 automated tests and by the author on real
+The code is checked by 298 automated tests and by the author on real
 hardware, but like any code it may still contain mistakes. It comes without
 warranty.
 
@@ -73,8 +73,9 @@ under the MIT License.
 
 配布物は2種類ある。どちらも作者の聴取記録（`logs/`）や作業記録は含まない。
 
-- **wheel**（`audiospace-<版>-py3-none-any.whl`、約0.3MB）: ライブラリだけを
-  使う人向け。入るのは `audiospace/` と既定 HRTF、`LICENSE`、`ATTRIBUTION.md`。
+- **wheel**（`audiospace-<版>-py3-none-any.whl`、約1.8MB）: ライブラリだけを
+  使う人向け。入るのは `audiospace/` と既定 HRTF（水平面と全天球）、`LICENSE`、
+  `ATTRIBUTION.md`。
   実測 HRTF の SOFA 21種と焼き込み済みの残響 IR は入らない
 - **zip**（`audiospace-<版>.zip`、約70MB）: ソース一式。ライブラリ、
   聴感確認アプリ（`demo/`）、テスト、ツール、SOFA 21種、残響 IR 7種、焼き込み済みの
@@ -89,8 +90,8 @@ under the MIT License.
 wheel を入れる場合（ファイル名は実物に合わせる）:
 
 ```
-python -m pip install audiospace-0.7.1-py3-none-any.whl
-python -m pip install "audiospace-0.7.1-py3-none-any.whl[playback]"
+python -m pip install audiospace-0.8.0-py3-none-any.whl
+python -m pip install "audiospace-0.8.0-py3-none-any.whl[playback]"
 ```
 
 2行目は実機再生も使う場合。wheel だけの環境では焼き込み済みの残響 IR が
@@ -125,7 +126,8 @@ python -m pip install -e .
 （sounddevice / soundfile）、全部入りは `.[full]`。
 定位確認ツール（`demo/`）を使うなら `.[app]`
 （wxPython / accessible_output2 / sounddevice / sofar）。
-既定 HRTF（`audiospace/data/default_horizontal.npz`、約205KB）は
+既定 HRTF（`audiospace/data/default_horizontal.npz`、約205KB）と、
+同じ耳介の全天球（`audiospace/data/default_sphere.npz`、約1.4MB）は
 パッケージデータとして wheel に入るので、PyInstaller でも
 パッケージごと固めれば同梱される。**配布時は CC BY 4.0 の表示が必要**
 （`attribution()` の文面と `ATTRIBUTION.md` を参照）。
@@ -145,13 +147,48 @@ player.set_sound_gain_db(h, -6.0)                 # dB でも指定できる
 player.stop_sound(h, fade_ms=30)                  # フェードアウトで停止
 player.pause(); player.resume()                   # 全体の一時停止と再開
 print(player.status())                            # 読み上げ用の状態文字列
-player.stop()
+player.close()                                    # 終わる（with でもよい）
 ```
 
 `play()` に渡したファイルはデコード結果がキャッシュされるので、同じ
 効果音を何度鳴らしてもディスクを読み直さない。鳴り終わった使い捨ての
 音は次の `play()` が自動で回収するため、スロットあふれを気にしなくて
 よい。個別の音の一時停止は `pause_sound(h)` / `resume_sound(h)`。
+
+**長い音は少しずつ読む**（`stream`）。1曲を丸ごと読むと、48kHz ステレオの
+3分の曲で約66MB になる。キャッシュに入らない大きさ（`sound_cache_max_bytes`、
+既定 16MB。48kHz ステレオで約44秒）のファイルは、`play()` が自動で
+`FileStreamSource` にして、別のスレッドで2秒先までを読みながら鳴らす。1分の
+曲で、`play()` にかかる時間は 488ms から 7ms、メモリは 46MB から 0.8MB に
+なった（測った値）。キャッシュに入っている短い音は、ファイルを開いて調べずに
+そのまま鳴らす（足音のように何百回も鳴らす音で、毎回ディスクを読まない）。
+`stream=True` はファイルにだけ使える（配列や音源に付けると ValueError）。
+少しずつ読んでいる間、ファイルは開いたままになる。プレイヤーを使い終えたら
+`close()` を呼ぶ（`with` を抜けても同じ）。音をすべて外し、ファイルを閉じる
+ので、その後でファイルを消したり置き換えたりできる。`stop()` は出力を止める
+だけで、音は残る（`start()` で続きから鳴らせる）。
+
+```python
+player.play("bgm.ogg", spatialise=False, loop=True)   # 長ければ自動で少しずつ
+player.play("bgm.ogg", spatialise=False, stream=True)  # 短くても少しずつ
+player.play("voice.wav", stream=False)                 # 長くても丸ごと
+```
+
+- 読めるのは wav・flac・ogg・mp3（soundfile、だめなら miniaudio）。
+  ファイルのレートが違えば samplerate で少しずつ変換する（丸ごと変換したのと
+  同じ値になる）。samplerate が無いときは、レートの違うファイルは丸ごと読む
+  （`stream=True` なら ValueError）
+- `loop_start` / `loop_end`（ファイルのフレーム）でつなぎ目なく繰り返す。
+  `rate`（1 以外）とは一緒に使えない（丸ごと読む）
+- 鳴らし始めの 0.5 秒は `play()` の中で読むので、出だしで途切れない。
+  読み込みが間に合わなかったときは、そのブロックが無音になり、`status()` に
+  「ファイルの読み込みが間に合わず無音 N ブロック」と出る。先読みの長さは
+  `player.stream_buffer_seconds`（既定 2 秒）
+- 鳴っている間はファイルを開いたまま読む。途中で読めなくなったら、その音だけが
+  外れる（鳴り終わりの知らせは `SOUND_ERROR`）
+- 低レベル API では `FileStreamSource(パス, エンジンのレート, channels=1 か 2)` を
+  `add_source` に渡す。長さ・レート・チャンネル数を、中身を読まずに調べるなら
+  `audio_file_info(パス)`
 
 ```python
 player.set_sound_lowpass(h, 0.7)              # 壁越し（こもらせる）
@@ -172,6 +209,103 @@ player.play("bgm.wav", spatialise=False, loop=True)   # ステレオのまま
 **再生レート**（`rate`）はピッチとテンポが一緒に動く。足音の揺らぎや
 ピッチ付きの合図に使う。レート違いも同じキャッシュに乗る。
 
+**鳴らし始めの時刻**（`delay_s`）は、その秒数だけ遅らせて、サンプル単位で
+正確に鳴らす。足音の並び、リズムの合図、こだまを、ゲーム側のタイマーなしで
+置ける。時間差を正確に保ちたい複数の音は `with player.together():` の中で
+鳴らす。中で鳴らした音は with を抜けるまで待ち、全部が同じ時刻から数える。
+
+```python
+for i in range(4):                                # 0.4秒ごとの足音4歩
+    player.play("step.wav", position=(0.0, 2.0 + i, 0.0), delay_s=0.4 * i)
+
+with player.together():                           # 直接音と床の反射
+    player.play("bell.wav", position=(0.0, 4.0, 0.0))
+    # 床が耳の3m下なら、反射は床に映した位置から、道のりの差 3.2m ぶん遅れる
+    player.play("bell.wav", position=(0.0, 4.0, -6.0), gain=0.6,
+                delay_s=0.0094)
+```
+
+- `together()` を使わずに `play()` を続けて呼ぶと、その間に音声のブロックが
+  入ることがあり、後の音だけ1ブロック（512フレームで約11ms）遅れる。
+  反射やこだまのように、ブロックより短い時間差で効く音ではずれが目立つ
+- `together()` の中で例外が出たら、その中で鳴らした音は鳴らさずに外す
+- 待っている間も音源の枠を1つ使う。待っている音を `stop_sound()` で止めると、
+  フェードの指定があってもその場で外れる
+- 待っている間は、音量やこもりのランプも進まない。待っている間に
+  `set_sound_gain(h, 1.0, ramp_ms=3000)` を呼ぶと、鳴り始めてから3秒かけて
+  大きくなる。`pause_sound()` で止めている間と、`pause()` で全体を止めて
+  いる間は、残りの待ち時間も減らない
+- 遅らせた音も遅らせない音も、データのとおりに鳴り始める（下の
+  「鳴り始めはデータのとおり」）
+
+**音のグループ**（`group`）は、効果音・BGM・声などの組に名前を付けて、
+組ごとに音量・一時停止・停止・ダッキングをかける。グループの音量は、音ごとの
+音量・距離・フェードに重ねて掛かる。設定画面の「効果音の音量」は、鳴っている
+音を1つずつ変えずに、1回の呼び出しで済む。
+
+```python
+player.set_group_gain("sfx", 0.7)                 # 効果音の音量（鳴らす前でもよい）
+player.play("step.wav", position=(1.0, 2.0, 0.0), group="sfx")
+player.play("bgm.ogg", spatialise=False, loop=True, group="music")
+player.set_ducking("music", by="voice", db=-12)   # 声の間だけ BGM を下げる
+player.play("line01.wav", spatialise=False, group="voice")
+player.pause_group("music"); player.resume_group("music")
+player.stop_group("sfx", fade_ms=30)              # 効果音を全部止める
+```
+
+- `set_group_gain(名前, 音量, ramp_ms=)` と `set_group_gain_db`。ランプは
+  `set_sound_gain` と同じく音声のスレッドで進む。`group_gain(名前)` は決めた
+  音量（ランプの行き先）を返す。まだ使っていない名前は音量 1
+- `pause_group` / `resume_group`: その場で止め、再開すると続きから鳴る（再開の
+  1ブロックはフェードイン）。`pause_sound()` で1つだけ止めた音は、グループを
+  再開しても止まったまま。止めている間は、遅らせた音の待ち時間も減らない
+- `stop_group(名前, fade_ms=)` は止めた音のハンドルを返す。`group_sounds(名前)`
+  でいまの音の一覧、`set_sound_group(h, 名前)` で別のグループへ移す（None で
+  どこにも入れない）
+- **ダッキング**（`set_ducking(名前, by=, db=-12, attack_ms=80, release_ms=400)`）:
+  `by` のグループの音が1つでも鳴っている間、`db` だけ下げる（押し込む音源
+  `open_stream_source` は、書いた音が残っている間だけ鳴っている扱い。何も
+  書いていない間は下げない。関数で音を作る `CallbackSource` は、関数が無音を
+  返している間は下げない）。下げるのに
+  `attack_ms`、戻すのに `release_ms` かかる。`set_group_gain` で決めた音量とは
+  別の倍率なので、利用者の音量の設定は上書きしない。`by` は名前の組でもよい。
+  `clear_ducking` で消す
+- 読み上げソフトの声のように、エンジンを通らない声の間は
+  `hold_ducking("music", True)` と `hold_ducking("music", False)` で手で下げる
+  （先に `set_ducking("music", db=-12)` で深さと速さを決めておく）
+- グループを使わない音は、今までと同じ音のまま。処理の重さも変わらない
+
+**鳴り終わりの知らせ**（`on_end`）は、音が鳴り終わったときに1回だけ関数を
+呼ぶ。セリフが終わったら次のセリフ、効果音が終わったら次の場面、のように
+使う。関数には `SoundEnd`（`handle`・`reason`・`detail`・`at_s`）が渡る。
+
+```python
+from audiospace import SOUND_FINISHED
+
+def next_line(event):
+    if event.reason == SOUND_FINISHED:           # 最後まで鳴った
+        player.play("line02.wav", spatialise=False, group="voice")
+
+player.play("line01.wav", spatialise=False, group="voice", on_end=next_line)
+
+# ゲームのループやタイマーから呼ぶ（20〜50ms ごとが目安）
+player.poll_ends()
+```
+
+- `reason` は `SOUND_FINISHED`（データを最後まで鳴らした）、`SOUND_STOPPED`
+  （`stop_sound`・`stop_group` などで止めた。フェードを付けたときは消え終わって
+  から）、`SOUND_ERROR`（音源の誤りで外した。理由は `detail`）
+- 関数は音声のスレッドでは呼ばない。`poll_ends()` を呼んだスレッドで呼ぶので、
+  画面のタイマーから呼べば、関数の中で画面の部品を触ってよい
+- 自分でループを持たないときは `player.watch_ends()`。プレイヤーのスレッドで
+  届ける。画面のスレッドへ渡すときは `watch_ends(dispatch=wx.CallAfter)`
+  （`dispatch(関数, 知らせ)` の形で呼ぶ）。`stop()` で止まる
+- 関数が例外を出しても、ほかの関数は呼ぶ。回数と最後の理由は `status()` に出る
+- `on_end` を渡したのに `poll_ends` も `watch_ends` も呼んでいないと、関数は
+  呼ばれない。2秒より古い知らせが残っていると、`status()` が「届けていない
+  鳴り終わりの知らせ」として知らせる
+- 低レベル API では `add_source(..., notify_end=True)` と `take_ended()`
+
 エンジンの終段には**リミッター**が入っている（既定で有効）。多数の
 音源が重なってフルスケールを超えそうなブロックだけ全体を下げるので、
 ヘッドホンで耳障りなクリップが出ない。効いた回数は `status()` に
@@ -180,12 +314,24 @@ player.play("bgm.wav", spatialise=False, loop=True)   # ステレオのまま
 HRTF を指定しなければ、**聴取テストで選定した実測HRTF**（Viking 耳介E、
 水平面のみ、205KB）が自動で読み込まれる。アセットが無ければ合成に落ちる。
 
+上の音や下の音も鳴らしたいときは、`full_sphere=True` で同じ耳介の
+**全天球**（1513方向、仰角は下45度から真上まで、約1.4MB）を使う。SOFA の
+測定値をそのまま npz にしたもので、sofar を入れなくても読める。全天球の
+アセットが無いときは `FileNotFoundError` になる（水平面や合成に黙って
+替えると、上下が鳴らないことに気づけないため）。耳介 E は前後の聴き取りで
+選んだもので、上下に合う耳介は人によって違う（`CUES.md`）。合わなければ
+`sofa_path` でほかの耳介を選ぶ。
+
 ```python
 from audiospace import default_hrir, default_is_measured, attribution
 
 hrir = default_hrir(48000)      # 出力レートに合わせて変換済み
 default_is_measured()           # 実測か、合成に落ちたか
 print(attribution())            # 配布時に表示する文面（CC BY 4.0）
+
+player = SpatialPlayer.open(full_sphere=True)     # 全天球で開く
+sphere = default_hrir(48000, full_sphere=True)    # 全天球だけを読む
+print(attribution(full_sphere=True))              # 全天球の文面
 ```
 
 ### 低レベル API（デバイスを開かない）
@@ -446,6 +592,54 @@ player.set_spaces([road, street, room])     # あとは聞き手を動かすだ�
 建物の間の道を抜けて何もない道へ歩き、各場所で手をたたく音を
 `demo/out/space_walk.wav` に書き出す（デバイスは開かない）。
 
+### 壁の向こうの音（自動の遮蔽）
+
+`set_spaces` で登録した空間（登録が無ければ `set_space` の空間）を使い、壁の
+向こうの音を自動でこもらせ、小さくする。どちらも無いときは何も変わらないので、
+`status()` が「空間がありません」と知らせる。音源と聞き手を結ぶ線が、閉じた面（壁・床・天井）を通り抜けたら、その
+面の材質で決まる。
+
+```python
+from audiospace import Opening
+
+kitchen_door = Opening((4.9, 2.0, 0.0), (5.1, 2.9, 2.0), name="kitchen_door")
+player.set_spaces([living, kitchen, hall], early=True, late=True)
+player.set_auto_occlusion(openings=[kitchen_door])
+player.set_opening("kitchen_door", "wooden_door")   # 戸を閉める
+player.set_opening("kitchen_door")                  # 開ける
+print(player.sound_occlusion(h).walls)              # 通り抜けた壁の材質
+```
+
+- 下がり方（こもりの分も合わせた、広い帯域の雑音での実測）: コンクリート・
+  れんが・石の壁で約 22dB、木の戸や木の壁で約 14dB、石膏ボードで約 11dB、
+  ガラスで約 10dB、カーテンで約 3dB。実際の遮音（コンクリートで 50dB ほど）
+  よりずっと小さい。壁の向こうの音がこもって聞こえること自体が手がかりなので、
+  聞こえる範囲に留めてある。値は材質の分類ごと
+  （`audiospace.OCCLUSION_BY_CATEGORY`、`material_occlusion(名前)`）。
+  `materials={"wooden_door": (6.0, 0.4)}` で材質ごとに差し替え、`strength=` で
+  全体を強めたり弱めたりできる
+- 隣り合う部屋の壁のように、ほぼ同じ平面（間が 0.5m 以内）にある面は、1枚の
+  壁として数える（強いほうの値）。間に部屋を1つはさめば壁2枚ぶん下がる
+- 戸口・窓・吹き抜けは `Opening`（穴を囲む箱）で面に穴をあける。箱は壁の厚みを
+  覆うように置く（両側の部屋の面がどちらも入るように）。開いた穴を通る線は
+  遮られない。`material` を付けると閉じた戸や窓になり、`set_opening` で
+  開け閉めする。面ごと「open」にした面も、穴と同じく通す
+- **回り込み**: まっすぐの線が壁で遮られるとき、開いた面と穴を通る道を探す。
+  そのほうが大きく聞こえるなら、音は聞き手の部屋の出入口の方向から、道のりの
+  距離で聞こえる。曲がる角度が大きいほど下がり、こもる。廊下の角の先の音が、
+  部屋の戸口から聞こえる。閉じた戸を通る近道と、開いた戸口を回る道の両方が
+  あるときは、大きく聞こえるほうを使う
+- 鳴り始めから遮蔽した値で鳴る（壁の向こうで鳴り始めた音が、開いてから
+  こもるようには聞こえない）。音源や聞き手が動いて変わるときは、100ms あたり
+  30dB の速さでなめらかに変わる。`teleport_listener` で瞬間移動したときは、
+  その場で行き先の値になる（前の場所の聞こえ方を残さない）
+- `set_sound_lowpass` で決めたこもりとは合わさる（上書きしない）。
+  `play(..., occlude=False)` の音は遮蔽しない（道しるべの音など）。聞き手に
+  付いて動く音（`relative=True`）と平置きの音も遮蔽しない
+- 既定では切ってある。切っているときの音は今までと同じ。64音源で聞き手が
+  歩き続けるとき、1ブロックの処理は 0.98ms から 1.8ms に増える（1ブロックで
+  調べ直す音源は 16 個まで。残りは次のブロック）
+
 ## 前後の判別について（重要）
 
 前後と上下の手がかりとして音源にかけている処理の一覧（数値と場所つき）は
@@ -477,7 +671,7 @@ player.engine.set_head_wobble(amplitude_deg=6.0)          # 個別指定
 
 ### 対策2: 訓練
 
-慣れれば分かるようになるのだから、慣れる機会を作る。`demo/quiz.py` の
+慣れれば分かるようになるのだから、慣れる機会を作る。`audiospace/quiz.py` の
 `TrainingSession` は、間違えた方向ほど出やすくなる重み付き抽選で、
 前後の取り違えは特に重く扱う。誤答直後に正解方向をもう一度鳴らして
 聞き比べさせる。
@@ -490,6 +684,50 @@ Viking には耳介が20種類ある。合うかどうかは組み合わせ次�
 ```python
 player.engine.set_hrir(other_hrir)     # 再生を止めずに差し替え
 ```
+
+#### ゲームの中で耳介を選ぶ（`PinnaSelection`）
+
+出題・採点（`audiospace.quiz`）と耳介の通算の記録（`audiospace.records`）は
+ライブラリにあり、画面にも音の出力にも依存しない。`PinnaSelection` が、
+定位確認ツールの「耳介の選定」（F8）と同じ流れを、ゲームの画面に組み込める
+形にまとめている。
+
+```python
+from audiospace import (Difficulty, PinnaSelection, RecordStore,
+                        load_pinna, viking_candidates)
+
+candidates = viking_candidates("assets/hrtf/viking")    # [(タグ, 表示名)]
+store = RecordStore(settings_dir / "pinna_records.json")
+selection = PinnaSelection(player, candidates, store,
+                           difficulty=Difficulty.EIGHT)
+speak(selection.intro())                    # 何種類を何問ずつ、基準、進み具合
+while not selection.finished:
+    if selection.prepare():                 # 次の耳介に切り替えた
+        speak(selection.round_text())       # 「3種類のうち2番目の耳介です」
+    selection.play(sound)                   # 出題の音（聞き直しも同じ）
+    selection.answer(wait_for_answer())     # いまの自分から見た方位
+speak(selection.finish())                   # 通算に積んで保存し、元の HRTF に戻す
+
+best = selection.best()                     # 通算の最良 (タグ, 表示名)
+if best is not None:
+    player.engine.set_hrir(load_pinna(best[0], player.engine.sample_rate))
+```
+
+- 1回で比べるのは数種類（合計およそ48問）。**現在の最良を基準として毎回入れ**、
+  残りをまだ試していない耳介で埋める。聞き手は回を重ねるごとに上達するので、
+  同じ回の中で基準と比べた差だけで順位を付ける。何回かに分けて全種類を試せる
+- 出題の音は、聞き手から見た方向に、聞き手に付いて動く位置で鳴らす。
+  向きを変えていたら `answer(方位, listener_yaw_deg=いまの向き)`。聞き直しは
+  `play` をもう一度呼び（前の音は止まる）、`note_replay()` で数えられる
+- 上下に合う耳介を選ぶなら `mode=MODE_ELEVATION`（正面の高さで答える。
+  `answer_elevation(仰角)`。全天球の SOFA が要る）。記録は前後用とは別の
+  ファイルに積む
+- 途中でやめるときは `cancel()`（記録には積まず、元の HRTF に戻す）。
+  `preload=True` なら、始めるときに顔ぶれの耳介を全部読む（途中の待ちが無くなる）
+- 耳介のデータ（SOFA）は wheel に入っていない。配布の zip の
+  `assets/hrtf/viking` を、ゲームと一緒に配る（CC BY 4.0。表示の文面は
+  ATTRIBUTION.md の「SOFA を無改変のまま使う場合」）。SOFA を読むには sofar が
+  要る。`tools/bake_hrtf_asset.py --pinna B` で焼いた npz も候補にできる
 
 ### 音量だけの手がかりは効かない
 
@@ -551,7 +789,10 @@ hrir = hrir.decimated(15.0)                      # さらに方位を間引く
 **2026-10-16 の軽量化の後は、全天球と水平面のみの差はほぼ無くなった**
 （128音源で 3.4ms と 3.2ms、下の「実測性能」）。上の表はそれ以前の測定。
 速さのために絞る必要はもう無い。仰角を使わないなら、読み込みと記憶域が
-小さくなる利点だけが残る。
+小さくなる利点だけが残る。2026-11-17 の測定でも、64音源・首振りありで
+同梱の水平面（216方向）と全天球（1513方向）はどちらも1ブロック約0.9ms
+だった。上下を使う 3D のゲームは、`SpatialPlayer.open(full_sphere=True)` で
+全天球の既定を使えばよい。
 
 ## 実測性能（このマシン）
 
@@ -671,10 +912,63 @@ HRIR をそのレートで構築するので、通常は意識しなくてよい
 
 USB オーディオの抜き差しや既定デバイスの切り替えでストリームは黙って
 死ぬ。**沈黙は目の見えない利用者が唯一気づけない失敗**なので、
-ゲームループから `player.check_device()` を毎秒程度呼ぶ。真になったら
-`status()` の先頭にその旨が入るので読み上げ、`player.reopen()` で
-つなぎ直す（鳴っている音は保たれる）。代わりのデバイスがレート違いの
-ときだけ `RuntimeError` になるので、その場合はプレイヤーを作り直す。
+プレイヤーに見張らせて、自動でつなぎ直させる。
+
+```python
+from audiospace import DEVICE_LOST, DEVICE_RATE_CHANGED, DEVICE_RESTORED
+
+# ゲームのループや画面のタイマーから、1秒に1回くらい
+event = player.poll_device()
+if event is not None:
+    speak(event.message)                  # 読み上げ用の文（いまの言語）
+    if event.kind == DEVICE_RATE_CHANGED:
+        player = SpatialPlayer.open()     # レートの違う機器。作り直す
+```
+
+`poll_device()` は、失われていれば `reopen()` でつなぎ直し（鳴っている音は
+保たれる）、失敗したら `player.device_retry_s`（3秒）ごとに試し続ける。
+知らせ（`DeviceEvent`）を返すのは状態が変わったときだけで、つなぎ直した
+（`DEVICE_RESTORED`）、失われてまだ戻らない（`DEVICE_LOST`、失敗し続けても
+1回だけ）、替わった機器のレートが違う（`DEVICE_RATE_CHANGED`）の3つ。
+元の機器が戻れば、試し続けたつなぎ直しで `DEVICE_RESTORED` になる。
+
+ループを書かずに済ませたいときは、`player.watch_device(on_event)` が別の
+スレッドで同じことをする（`stop()` か `unwatch_device()` で止まる）。
+`on_event` は見張りのスレッドで呼ばれるので、画面の部品を触るなら画面の
+スレッドへ渡す（wxPython なら `wx.CallAfter`）。画面のあるアプリは、画面の
+タイマーから `poll_device()` を呼ぶほうが扱いやすい（定位確認ツールはこの形）。
+
+自分で組み立てるなら、`player.check_device()` で調べ、`player.reopen()` で
+つなぎ直す。代わりのデバイスがレート違いのときは `DeviceRateError`
+（`RuntimeError` の一種）になる。
+
+### 壊れた音源と、おかしな値
+
+自分で作った音源の `read()` が例外を出したり、形の違う配列を返したり
+したときは、その音源だけを外して数える（`status()` に「音源の異常で
+外した音」として理由と一緒に出る）。ほかの音は鳴り続ける。
+
+位置・音量・こもり・残響の送り・聞き手の位置と向きに NaN や無限大を渡すと、
+その場で `ValueError` になる。受け取ってしまうと、その音源がある間は出力
+全体が壊れた値になり、全部の音が消えるため。
+
+読めない音声ファイルは `DecodeError`（`ValueError` の一種）になり、
+ファイルの名前と、読めなかった理由が文に入る。
+
+### 鳴り始めはデータのとおり
+
+新しく鳴らした音は、最初のサンプルから、指定した音量のまま鳴る（フェード
+インしない）。足音やクリックの立ち上がりが、そのまま耳に届く。
+
+- 2026-11-18 までは、最初の1ブロック（約11ms）を音量 0 からフェードイン
+  していた。先頭の1サンプルだけのクリックは無音になり、ほかの音も立ち上がりが
+  弱まっていた
+- 波形の途中で切ってあるデータは、ほかの再生ソフトと同じく、鳴り始めで
+  プツッと鳴る。データ側に短いフェードを付けるか、`gain=0.0` で鳴らして
+  `set_sound_gain(h, 1.0, ramp_ms=10)` で上げる（間を空けないなら、2つを
+  `together()` の中で呼ぶ）
+- 音量の変化、`stop_sound(h, fade_ms=)`、`pause_sound()` からの再開は、
+  今までどおりブロックの中でなめらかに変わる
 
 ### 音源スロットは固定コスト
 
@@ -691,16 +985,16 @@ audiospace のフォルダで次を実行する:
 python -X utf8 tests\run_all.py
 ```
 
-これで5スイート計241件がまとめて走る（無音設定は内部で行う。表示の言語は
+これで5スイート計298件がまとめて走る（無音設定は内部で行う。表示の言語は
 日本語に固定する）。
 個別に走らせる場合:
 
 ```
-set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_tests.py         (ドメイン109件)
+set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_tests.py         (ドメイン167件)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_motion_tests.py  (首振り11件)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_quiz_tests.py    (クイズ39件)
-set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_records_tests.py (記録20件)
-set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_app_tests.py     (GUI構成49件)
+set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_records_tests.py (記録21件)
+set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_app_tests.py     (GUI構成60件)
 ```
 
 音が実際に空間情報を持っているかを数値で検証する。ITD が人間の
@@ -712,6 +1006,31 @@ GUI テストはウィジェットの名前、ラベルの生成順序、文字�
 英語で起動したアプリ（`tests/en_probe.py`、別のプロセス）で、利用者に見える
 文に日本語が残っていないことも調べる。
 
+wxPython の無い環境では `python -X utf8 tests\run_all.py --skip-gui` で、GUI構成の
+テストを省いて残りを回せる（省いたことは最後の行に書く）。
+
+### 自動テスト（GitHub Actions）
+
+GitHub のリポジトリでは、main に送るたびと pull request のたびに、
+`.github/workflows/tests.yml` が音を出さずにテストを回す（この設定は zip には
+入っていない）。
+
+- Windows・macOS・Linux と、Python 3.10（対応する最も古い版）・3.13 の6通り
+- GUI構成のテストと英語の表示の確かめは Windows だけ。macOS と Linux は
+  `--skip-gui`
+- OS の表示言語の判定（`tests/check_language.py`）も OS ごとに確かめる。macOS は
+  表示言語を日本語に切り替えても確かめる
+- 1件ずつの結果のファイル（`tests/*_result.txt`）は、成否にかかわらず
+  Artifacts に置く
+
+結果は、リポジトリを取り出したフォルダで GitHub CLI（gh）を使うと文字で読める。
+
+```
+gh run list --workflow tests.yml        いままでの結果の一覧
+gh run view 番号 --log-failed           落ちたところの出力
+gh run download 番号                    結果のファイルを取ってくる
+```
+
 ## 聴感確認アプリ
 
 ```
@@ -722,6 +1041,12 @@ python -X utf8 demo\localization_app.py
 必要な部品は `python -m pip install -e ".[app]"` で入る。使い方は
 `マニュアル.html`（同じ内容の `マニュアル.txt`）にあり、アプリの中では
 F1 でキーの説明が開く。zip では `定位確認ツールを起動.bat` から起動できる。
+
+設定欄の選択（HRTF・音の種類・首振り・残響・空間・家具の量・人の数・精密な
+残響・難易度・前後の強調）は `settings/app_settings.json` に保存し、次の起動に
+引き継ぐ。選択は並び順でなく中身の名前で持つ。首かしげ・上下の強調・床の反射は
+いつもオフ、繰り返し再生と基準音はいつもオンで始める（起動時の状態を決めて
+あるもの）。最初の状態に戻すには、閉じてからこのファイルを消す。
 
 - F2 試聴（音が周囲を回る） / F3 クイズ / F7 訓練 / F8 耳介の選定
 - F11 首振りの効果測定（ありなしを1問ごとに交互に出して条件別に集計。
@@ -808,7 +1133,8 @@ sofar・pyroomacoustics・sounddevice・miniaudio・samplerate はすべて MIT 
 
 ### 同梱データ
 
-`audiospace/data/default_horizontal.npz`（既定 HRTF）と
+`audiospace/data/default_horizontal.npz`（既定 HRTF）、
+`audiospace/data/default_sphere.npz`（全天球の既定 HRTF）と
 `assets/hrtf/viking/` の SOFA は **Viking HRTF Dataset v2（CC BY 4.0）**。
 商用利用は可能だが**表示が必須**。組み込んで配布する場合は
 `ATTRIBUTION.md` の文面を製品側にも再掲すること（文面は

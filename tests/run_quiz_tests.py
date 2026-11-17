@@ -1,4 +1,4 @@
-"""demo/quiz.py のドメインテスト。GUI も音も不要。
+"""audiospace/quiz.py のドメインテスト。GUI も音も不要。
 
 Run: set AUDIOSPACE_SILENT=1 && python -X utf8 tests\\run_quiz_tests.py
 Out: tests/quiz_test_result.txt (UTF-8)
@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 from audiospace import HrirSet, Listener, SpatialEngine  # noqa: E402
 from audiospace.geometry import relative_spherical  # noqa: E402
 from audiospace.sources import BufferSource  # noqa: E402
-from demo.quiz import (ELEVATION_LEVELS, ABWobbleSession,  # noqa: E402
+from audiospace.quiz import (ELEVATION_LEVELS, ABWobbleSession,  # noqa: E402
                        CalibrationSession, Difficulty, ElevationSession,
                        FrontElevationSession,
                        QuizSession, TrainingSession,
@@ -725,8 +725,8 @@ def t_roll_render() -> str:
 def t_elev_calib() -> str:
     import tempfile
 
-    from demo.quiz import ElevationCalibrationSession
-    from demo.records import RecordStore
+    from audiospace.quiz import ElevationCalibrationSession
+    from audiospace.records import RecordStore
 
     cands = [("subj_A.sofa", "耳介A"), ("subj_B.sofa", "耳介B"),
              ("subj_C.sofa", "耳介C")]
@@ -770,7 +770,7 @@ def t_elev_calib() -> str:
 
 @test("回る向き: 水平16通りと頭上を並べ、同じ音は続かない")
 def t_rotation_build() -> str:
-    from demo.quiz import RotationSession
+    from audiospace.quiz import RotationSession
     s = RotationSession(seed=3)
     assert len(s.trials) == 24
     horiz = [(t.truth_motion, t.truth_deg) for t in s.trials
@@ -798,7 +798,7 @@ def t_rotation_build() -> str:
 
 @test("回る向き: 位置は聞き手から見た半周（左回りは前→左→後ろ）")
 def t_rotation_path() -> str:
-    from demo.quiz import RotationTrial
+    from audiospace.quiz import RotationTrial
 
     def az_el(p):
         return relative_spherical(Listener(), p)[:2]
@@ -832,7 +832,7 @@ def t_rotation_path() -> str:
 
 @test("回る向き: 採点と、逆向き（前後の取り違え）の数え方")
 def t_rotation_score() -> str:
-    from demo.quiz import RotationSession
+    from audiospace.quiz import RotationSession
     s = RotationSession(seed=4)
     reverse = {"left": "right", "right": "left",
                "to_front": "to_back", "to_back": "to_front"}
@@ -869,7 +869,7 @@ def t_rotation_render() -> str:
     耳介 E の性質で、後ろを通る間は高い音域が弱まるはず。"""
     if not VIKING_E.exists():
         return f"{VIKING_E.name} が未取得のため省略"
-    from demo.quiz import ROTATION_ARC_SECONDS, RotationTrial
+    from audiospace.quiz import ROTATION_ARC_SECONDS, RotationTrial
     hrir = HrirSet.from_sofa(VIKING_E, sample_rate=48000)
     noise = (np.random.default_rng(5).standard_normal(48000) * 0.2
              ).astype(np.float32)

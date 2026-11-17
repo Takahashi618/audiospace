@@ -32,7 +32,7 @@ the program to choose one.
 """
 from __future__ import annotations
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
 
 from .acoustics import (FACE_LABELS, FACE_MATERIALS, FURNISH_LEVELS,
                         FURNISHINGS, SPACE_KINDS, SPACE_PRESETS, Furnishing,
@@ -47,22 +47,31 @@ from .defaults import (DEFAULT_PINNA, attribution, default_hrir,
                        default_is_measured)
 from .device import (DeviceChoice, choose_output, describe_devices,
                      is_silent, list_output_devices)
-from .engine import SourceSlot, SpatialEngine
+from .engine import (SOUND_ERROR, SOUND_FINISHED, SOUND_STOPPED,
+                     SoundEnd, SoundGroup, SourceSlot, SpatialEngine)
 from .geometry import (Listener, distance_gain, front_back_gain,
                        relative_spherical)
 from .hrtf import HrirSet
 from .i18n import language
 from .motion import (ROLL_PRESETS, WOBBLE_PRESETS, HeadWobble, roll_labels,
                      wobble_labels)
-from .player import SpatialPlayer
+from .player import (DEVICE_LOST, DEVICE_RATE_CHANGED, DEVICE_RESTORED,
+                     DeviceEvent, DeviceRateError, SpatialPlayer)
 from .presets import (BUILTIN_PRESETS, RoomIr, RoomPreset, describe_presets,
                       load_all, load_room_ir, preset_names,
                       preset_reverb_spec, render_room_ir)
 from .early import EarlyReflections
+from .pinna import (MODE_ELEVATION, MODE_FRONT_BACK, PinnaSelection,
+                    best_pinna, load_pinna, viking_candidates)
+from .quiz import Difficulty
+from .records import RecordStore
+from .occlusion import (OCCLUSION_BY_CATEGORY, Occlusion, Opening,
+                        material_occlusion)
 from .reverb import (BandFdnReverb, ConvolutionReverb, FdnReverb,
                      VectorFdnReverb, db_to_gain, gain_to_db,
                      reverb_from_spec, reverb_spec_problems, rt60_of)
-from .sources import (BufferSource, CallbackSource, PushSource,
+from .sources import (BufferSource, CallbackSource, DecodeError,
+                      FileStreamSource, PushSource, audio_file_info,
                       StereoBufferSource, is_stereo_file, load_flat,
                       load_mono, load_stereo, resampled_by)
 
@@ -71,9 +80,19 @@ __all__ = [
     # 表示の言語（ja か en。環境変数 AUDIOSPACE_LANG か OS の表示言語で決まる）
     "language",
     # high level
-    "SpatialPlayer",
+    "SpatialPlayer", "DeviceRateError",
+    # 出力デバイスの見張り（poll_device / watch_device が知らせること）
+    "DeviceEvent", "DEVICE_LOST", "DEVICE_RESTORED", "DEVICE_RATE_CHANGED",
     # engine
-    "SpatialEngine", "SourceSlot",
+    "SpatialEngine", "SourceSlot", "SoundGroup",
+    # 耳介の選定（ゲームの中で自分に合う耳介を選ぶ。出題は audiospace.quiz、
+    # 通算の記録は audiospace.records）
+    "PinnaSelection", "RecordStore", "Difficulty", "viking_candidates",
+    "load_pinna", "best_pinna", "MODE_FRONT_BACK", "MODE_ELEVATION",
+    # 部屋をまたぐ音の自動の遮蔽（set_auto_occlusion）
+    "Opening", "Occlusion", "material_occlusion", "OCCLUSION_BY_CATEGORY",
+    # 鳴り終わりの知らせ（play の on_end / poll_ends / watch_ends）
+    "SoundEnd", "SOUND_FINISHED", "SOUND_STOPPED", "SOUND_ERROR",
     # hrtf / geometry
     "HrirSet", "Listener", "relative_spherical", "distance_gain",
     "front_back_gain",
@@ -102,7 +121,9 @@ __all__ = [
     # sources
     "BufferSource", "StereoBufferSource", "PushSource", "CallbackSource",
     "load_mono", "load_stereo", "load_flat", "is_stereo_file",
-    "resampled_by",
+    "resampled_by", "DecodeError",
+    # 長いファイルを少しずつ読む（play の stream）
+    "FileStreamSource", "audio_file_info",
     # devices
     "DeviceChoice", "choose_output", "list_output_devices",
     "describe_devices", "is_silent",

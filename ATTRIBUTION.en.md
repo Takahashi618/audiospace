@@ -50,7 +50,9 @@ SOFTWARE.
 ## Viking HRTF Dataset v2
 
 - **Where**: `assets/hrtf/viking/subj_*.sofa` (unchanged) and the default
-  HRTF made from it, `audiospace/data/default_horizontal.npz` (modified)
+  HRTFs made from it: `audiospace/data/default_horizontal.npz` (modified)
+  and the full sphere `audiospace/data/default_sphere.npz` (the measured
+  values unchanged, converted to npz)
 - **License**: Creative Commons Attribution 4.0 International (CC BY 4.0)
   https://creativecommons.org/licenses/by/4.0/
 - **Authors of v2**: Simone Spagnol, Riccardo Miccini, Rúnar Unnthórsson
@@ -76,9 +78,26 @@ by Spagnol, Miccini and Unnthorsson (2020,
 https://doi.org/10.5281/zenodo.4160401), based on The Viking HRTF
 dataset by Spagnol, Purkhus, Bjornsson and Unnthorsson (SMC 2019),
 used under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
-Modified: resampled, truncated to two receivers, restricted to the
-horizontal plane.
+Modified: restricted to the horizontal plane, converted from SOFA to the
+NumPy npz format.
 ```
+
+The text for using the full-sphere default HRTF
+(`default_hrir(full_sphere=True)`, `SpatialPlayer.open(full_sphere=True)`).
+`audiospace.attribution(full_sphere=True)` returns the same text.
+
+```
+This software includes HRTF data from the Viking HRTF Dataset v2 by
+Spagnol, Miccini and Unnthorsson (2020,
+https://doi.org/10.5281/zenodo.4160401), based on The Viking HRTF
+dataset by Spagnol, Purkhus, Bjornsson and Unnthorsson (SMC 2019), used
+under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+Modified: converted from SOFA to the NumPy npz format (the measured
+values are unchanged).
+```
+
+If you use both, showing the text for the horizontal one and the text for
+the full sphere together is the safe choice.
 
 When you use the SOFA files unchanged, leave out the last sentence about
 modifications (from "Modified" onward). If you bake the asset with

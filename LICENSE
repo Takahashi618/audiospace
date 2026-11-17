@@ -22,8 +22,9 @@ SOFTWARE.
 
 ---
 
-The default HRTF data (audiospace/data/default_horizontal.npz) and the
-files under assets/hrtf/viking/ are NOT covered by the MIT License above.
+The default HRTF data (audiospace/data/default_horizontal.npz and
+audiospace/data/default_sphere.npz) and the files under
+assets/hrtf/viking/ are NOT covered by the MIT License above.
 They come from the Viking HRTF Dataset v2 and are licensed under
 Creative Commons Attribution 4.0 International (CC BY 4.0).
 See ATTRIBUTION.md for the required credit.

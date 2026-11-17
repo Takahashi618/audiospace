@@ -1,7 +1,9 @@
-"""定位テストのドメインロジック。
+"""聴き取りテストの出題・採点・集計（方向・上下・回る向き・耳介の選定）。
 
-GUI にも音声出力にも依存しない純粋なロジックなので、ヘッドレスで検証
-できる。出題・採点・統計だけを担当し、音を鳴らすのは呼び出し側。
+画面にも音の出力にも依存しない純粋なロジックなので、ゲームの中の
+「自分に合う耳介を選ぶ」画面や練習の画面にそのまま使える。出題・採点・
+統計だけを担当し、音を鳴らすのは呼び出し側。耳介の選定を、HRTF の
+切り替えと通算の記録まで含めてまとめて行うなら `audiospace.pinna`。
 
 方位の規約は audiospace 本体と同じ (0度=正面、反時計回り、90度=左)。
 """
@@ -12,7 +14,7 @@ import random
 from dataclasses import dataclass, field
 from enum import Enum
 
-from audiospace.i18n import join_sentences, list_sep, tr
+from .i18n import join_sentences, list_sep, tr
 
 
 def question_no(n: int) -> str:
