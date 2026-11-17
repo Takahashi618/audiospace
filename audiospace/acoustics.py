@@ -302,8 +302,20 @@ class Space:
     contents: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if min(self.size) <= 0:
-            raise ValueError(f"size must be positive, got {self.size}")
+        # NaN は「<= 0」で偽になり、そのまま通っていた。有限の正の数だけ通す
+        if (len(self.size) != 3
+                or not all(math.isfinite(v) and v > 0 for v in self.size)):
+            raise ValueError(f"size must be three positive numbers, "
+                             f"got {self.size}")
+        if (len(self.origin) != 3
+                or not all(math.isfinite(v) for v in self.origin)):
+            raise ValueError(f"origin must be three finite numbers, "
+                             f"got {self.origin}")
+        for label, value in (("early_gain", self.early_gain),
+                             ("late_gain", self.late_gain),
+                             ("scattering", self.scattering)):
+            if not (math.isfinite(value) and value >= 0):
+                raise ValueError(f"{label} must be 0 or more, got {value}")
         for key, count in self.contents.items():
             if key not in FURNISHINGS:
                 raise KeyError(f"unknown furnishing {key!r}; "

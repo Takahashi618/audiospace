@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
+import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -165,6 +167,47 @@ class PinnaRecord:
                   f"{self.mean_error_deg:.0f} degrees")
 
 
+_COUNT_FIELDS = ("n_answered", "n_correct", "n_fb_testable",
+                 "n_fb_confusions", "n_sessions", "n_answered_hard",
+                 "n_correct_hard")
+
+
+def _is_number(value) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
+
+
+def _record_from(item) -> PinnaRecord | None:
+    """保存してあった1件を記録にする。形や型が違えば None。
+
+    JSON としては読めても、数の所に文字、一覧の所に null などが入っていると、
+    後の集計で例外になる（手で編集したファイル、別の道具が書いたファイル）。
+    """
+    if not isinstance(item, dict):
+        return None
+    try:
+        rec = PinnaRecord(**item)
+    except TypeError:
+        return None
+    if not isinstance(rec.tag, str) or not rec.tag:
+        return None
+    if not isinstance(rec.label, str) or not isinstance(rec.last_seen, str):
+        return None
+    for name in _COUNT_FIELDS:
+        value = getattr(rec, name)
+        if (not isinstance(value, int) or isinstance(value, bool)
+                or value < 0):
+            return None
+    if not _is_number(rec.total_error_deg):
+        return None
+    for name in ("relative_deltas", "delta_directions"):
+        values = getattr(rec, name)
+        if (not isinstance(values, list)
+                or not all(_is_number(v) for v in values)):
+            return None
+    return rec
+
+
 def _merge_records(a: PinnaRecord, b: PinnaRecord) -> PinnaRecord:
     """同じ耳介の記録を1つに畳む（旧形式からの移行用）。
 
@@ -225,10 +268,11 @@ class RecordStore:
         except (OSError, ValueError, AttributeError, TypeError) as exc:
             self._set_aside(exc)
             return
+        skipped = 0
         for item in items:
-            try:
-                rec = PinnaRecord(**item)
-            except TypeError:
+            rec = _record_from(item)
+            if rec is None:
+                skipped += 1
                 continue
             # 旧形式（絶対パスのタグ）をファイル名へ移行する。同じ耳介が
             # 旧新の両形式で並んでいたら1つに畳む。
@@ -236,6 +280,22 @@ class RecordStore:
             known = self.records.get(rec.tag)
             self.records[rec.tag] = (rec if known is None
                                      else _merge_records(known, rec))
+        if skipped:
+            # 使えない記録は外して続ける。次の保存で元のファイルから消える
+            # ので、写しを .broken に残す（移すと、使える記録まで失う）
+            broken = self.path.with_suffix(self.path.suffix + ".broken")
+            try:
+                shutil.copyfile(self.path, broken)
+                kept = tr(f"元のファイルの写しを {broken.name} に残しました",
+                          f"a copy of the file was kept as {broken.name}")
+            except OSError:
+                kept = tr("元のファイルの写しは残せませんでした",
+                          "a copy of the file could not be kept")
+            self.load_error = tr(
+                f"耳介の通算成績に使えない記録が{skipped}件あったので、"
+                f"読み込みませんでした（{kept}）",
+                f"{skipped} unusable record(s) in the pinna totals were not "
+                f"loaded ({kept}).")
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

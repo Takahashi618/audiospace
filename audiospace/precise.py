@@ -32,6 +32,7 @@ import numpy as np
 
 from .acoustics import FACES, Space, absorption, band_centers
 from .i18n import tr
+from .presets import by_nearest_rate
 
 #: 焼き込み済みの IR の置き場所（リポジトリの構成）。wheel には無い
 SPACE_IR_DIR = Path(__file__).resolve().parent.parent / "assets" / "space_ir"
@@ -39,6 +40,13 @@ SPACE_IR_DIR = Path(__file__).resolve().parent.parent / "assets" / "space_ir"
 TAIL_FADE_S = 0.02
 #: 終わりのフェードの長さ（秒）
 TAIL_END_FADE_S = 0.1
+#: 速い版と大きさをそろえる帯域（Hz）。足音や声が集まるあたり。全帯域の
+#: エネルギーでそろえると白色雑音でしか合わず、この帯域では精密版が
+#: 2〜4dB 大きかった
+LEVEL_BAND = (100.0, 4000.0)
+#: 尾の meta に書く、そろえ方の印。印の無い尾（前の版が作ったもの）は、
+#: 読み込むときにそろえ直す
+LEVEL_MATCH = "band-100-4000"
 
 
 def space_key(space: Space) -> str:
@@ -99,12 +107,32 @@ class SpaceIr:
         from scipy import signal
 
         g = gcd(int(self.sample_rate), int(sample_rate))
-        out = signal.resample_poly(self.tail, sample_rate // g,
-                                   self.sample_rate // g,
-                                   axis=-1).astype(np.float32)
+        # フィルタとしての利得を保つ（HrirSet.resampled と同じ。そのままだと
+        # 96kHz で精密版の響きだけが 6dB 大きくなった）
+        out = (signal.resample_poly(self.tail, sample_rate // g,
+                                    self.sample_rate // g, axis=-1)
+               * (self.sample_rate / sample_rate)).astype(np.float32)
         return SpaceIr(self.key, self.name, out, int(sample_rate),
                        self.rt60_bands,
                        dict(self.meta, resampled_from=self.sample_rate))
+
+    def matched(self, space: Space) -> "SpaceIr":
+        """速い版と大きさをそろえた尾（そろえ方の印があれば、そのまま返す）。
+
+        前の版が作った尾は、全帯域のエネルギーでそろえてある。読み込む
+        ときに、いまのそろえ方（LEVEL_BAND）に直す。ファイルは書き換えない。
+        """
+        if "level_match" in self.meta:
+            return self
+        target = _fast_tail_energy(space, self.sample_rate)
+        energy = _band_energy(self.tail, self.sample_rate)
+        tail = self.tail
+        if energy > 0.0 and target > 0.0:
+            tail = (tail.astype(np.float64)
+                    * np.sqrt(target / energy)).astype(np.float32)
+        return SpaceIr(self.key, self.name, tail, self.sample_rate,
+                       self.rt60_bands, dict(self.meta,
+                                             level_match=LEVEL_MATCH))
 
     def save(self, path: str | Path) -> Path:
         path = Path(path)
@@ -196,23 +224,26 @@ def render_space_ir(space: Space, sample_rate: int = 48000,
 
     if match_level:
         target = _fast_tail_energy(space, int(sample_rate))
-        energy = float(np.sum(tail ** 2))
+        energy = _band_energy(tail, int(sample_rate))
         if energy > 0.0 and target > 0.0:
             tail *= np.sqrt(target / energy)
 
     rt = _band_rt60(ir.mean(axis=0), int(sample_rate))
     return SpaceIr(space_key(space), space.name, tail.astype(np.float32),
                    int(sample_rate), rt,
-                   {"tail_start_s": tail_start_s(space),
+                   {"level_match": LEVEL_MATCH if match_level else "none",
+                    "tail_start_s": tail_start_s(space),
                     "lead_s": lead / sample_rate, "n_rays": int(n_rays),
                     "listener": listener.tolist(), "source": source.tolist(),
                     "pyroomacoustics": pra.__version__})
 
 
 def _fast_tail_energy(space: Space, sample_rate: int) -> float:
-    """速い版（BandFdnReverb）の後期残響の、インパルスへの応答のエネルギー。
+    """速い版（BandFdnReverb）の後期残響の、インパルスへの応答のエネルギー
+    （LEVEL_BAND の帯域の分）。
 
-    精密版の尾をこれにそろえれば、速い版と切り替えても音量が変わらない。
+    精密版の尾をこれにそろえれば、速い版と切り替えても、ふつうの音の
+    響きの大きさが変わらない。
     """
     from .reverb import band_reverb_for
 
@@ -223,7 +254,19 @@ def _fast_tail_energy(space: Space, sample_rate: int) -> float:
                  dtype=np.float32)
     x[0, 0] = 1.0
     y = np.concatenate([rev.process(b) for b in x])
-    return float(np.sum(y.astype(np.float64) ** 2))
+    return _band_energy(y.T, sample_rate)
+
+
+def _band_energy(x: np.ndarray, sample_rate: int) -> float:
+    """LEVEL_BAND の帯域のエネルギー。x は (チャンネル, サンプル)。"""
+    from scipy import signal
+
+    lo, hi = LEVEL_BAND
+    sos = signal.butter(4, [lo, min(hi, sample_rate * 0.45)], btype="band",
+                        fs=sample_rate, output="sos")
+    y = signal.sosfilt(sos, np.atleast_2d(np.asarray(x, dtype=np.float64)),
+                       axis=-1)
+    return float(np.sum(y ** 2))
 
 
 def _band_rt60(ir: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -279,11 +322,13 @@ def find_space_ir(space: Space, sample_rate: int,
         # 書きかけ（.part.npz）は候補にしない。読めないファイルは「無い」と
         # 同じに扱い、次の候補を試す（例外にすると空間を選ぶたびに失敗する）
         candidates = ([exact] if exact.exists() else [])
-        candidates += [c for c in sorted(folder.glob(f"{key}_*.npz"))
+        candidates += [c for c in by_nearest_rate(
+                           folder.glob(f"{key}_*.npz"), int(sample_rate))
                        if ".part" not in c.name and c != exact]
         for path in candidates:
             try:
-                found = SpaceIr.load(path).resampled(int(sample_rate))
+                found = (SpaceIr.load(path).matched(space)
+                         .resampled(int(sample_rate)))
             except Exception:                    # noqa: BLE001
                 continue
             _MEMORY[(key, int(sample_rate))] = found

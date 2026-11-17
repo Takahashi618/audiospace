@@ -93,9 +93,10 @@ class RoomIr:
         from scipy import signal
 
         g = gcd(int(self.sample_rate), int(sample_rate))
-        out = signal.resample_poly(self.ir, sample_rate // g,
-                                   self.sample_rate // g,
-                                   axis=-1).astype(np.float32)
+        # フィルタとしての利得を保つ（HrirSet.resampled と同じ）
+        out = (signal.resample_poly(self.ir, sample_rate // g,
+                                    self.sample_rate // g, axis=-1)
+               * (self.sample_rate / sample_rate)).astype(np.float32)
         return RoomIr(self.preset, out, sample_rate, self.rt60,
                       dict(self.meta, resampled_from=self.sample_rate))
 
@@ -194,10 +195,29 @@ def load_room_ir(name: str, sample_rate: int,
     exact = folder / f"{name}_{int(sample_rate)}.npz"
     if exact.exists():
         return RoomIr.load(exact)
-    candidates = sorted(folder.glob(f"{name}_*.npz"))
+    candidates = by_nearest_rate(folder.glob(f"{name}_*.npz"),
+                                 int(sample_rate))
     if not candidates:
         return None
     return RoomIr.load(candidates[0]).resampled(int(sample_rate))
+
+
+def by_nearest_rate(paths, sample_rate: int) -> list[Path]:
+    """「名前_レート.npz」の候補を、変換の元にしたい順に並べる。
+
+    求めるレート以上でいちばん近いもの（高い音を失わない）、無ければ
+    いちばん高いもの。名前の順（レートの低い順）で先頭を取ると、48kHz が
+    あるのに 44.1kHz から 96kHz を作っていた。
+    """
+    def rate_of(path: Path) -> int:
+        tail = path.stem.rsplit("_", 1)[-1]
+        return int(tail) if tail.isdigit() else 0
+
+    def key(path: Path):
+        rate = rate_of(path)
+        return (0, rate) if rate >= sample_rate else (1, -rate)
+
+    return sorted(paths, key=lambda p: (key(p), p.name))
 
 
 def load_all(sample_rate: int = 48000,

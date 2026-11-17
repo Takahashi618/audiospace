@@ -1038,7 +1038,9 @@ class SpatialPlayer:
             room = baked if baked is not None else render_room_ir(
                 BUILTIN_PRESETS[room], self.engine.sample_rate, max_seconds)
         ir = room.ir if isinstance(room, RoomIr) else np.asarray(room)
-        self.engine.set_reverb(ConvolutionReverb(ir, block=self.engine.block))
+        self.engine.set_reverb(ConvolutionReverb(
+            ir, block=self.engine.block,
+            sample_rate=self.engine.sample_rate))
 
     def set_space(self, space, early: bool = True, late: bool = True,
                   transition_s: float = 0.3,

@@ -85,8 +85,12 @@ class HrirSet:
         ratio = sample_rate / self.sample_rate
         new_taps = int(round(self.taps * ratio))
         flat = self.data.reshape(-1, self.taps)
-        out = signal.resample_poly(flat, sample_rate, self.sample_rate,
-                                   axis=-1).astype(np.float32)
+        # フィルタとして使う応答は、サンプルの数が増えたぶん高さを下げる。
+        # 波形の高さをそのままにすると、利得がレートの比だけ変わる
+        # （48kHz の測定を 96kHz で使うと、音がすべて 6dB 大きくなる）
+        out = (signal.resample_poly(flat, sample_rate, self.sample_rate,
+                                    axis=-1)
+               * (self.sample_rate / sample_rate)).astype(np.float32)
         out = out[:, :new_taps].reshape(self.n_directions, 2, -1)
         return HrirSet(out, self.azimuth, self.elevation, sample_rate,
                        f"{self.name}@{sample_rate}Hz")

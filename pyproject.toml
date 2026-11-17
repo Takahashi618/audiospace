@@ -17,7 +17,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audiospace"
-version = "0.8.1"
+version = "0.8.2"
 description = "視覚障害者向けゲーム・ツールのためのバイノーラル3D音響ライブラリ（OpenAL 非依存）"
 readme = "README.md"
 requires-python = ">=3.10"

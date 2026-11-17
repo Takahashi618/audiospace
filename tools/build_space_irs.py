@@ -21,16 +21,35 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from audiospace.acoustics import SPACE_PRESETS, space_preset  # noqa: E402
-from audiospace.precise import (SPACE_IR_DIR, render_space_ir,  # noqa: E402
-                                space_key)
+from audiospace.precise import (SPACE_IR_DIR, SpaceIr,  # noqa: E402
+                                render_space_ir, space_key)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rate", type=int, default=48000)
     parser.add_argument("--only", nargs="*", default=None)
+    parser.add_argument("--rematch", action="store_true",
+                        help="計算し直さず、焼き込み済みの尾の大きさだけを"
+                             "いまのそろえ方に直す")
     args = parser.parse_args()
     SPACE_IR_DIR.mkdir(parents=True, exist_ok=True)
+    if args.rematch:
+        for name in SPACE_PRESETS:
+            if args.only and name not in args.only:
+                continue
+            space = space_preset(name)
+            path = SPACE_IR_DIR / f"{space_key(space)}_{args.rate}.npz"
+            if not path.exists():
+                continue
+            old = SpaceIr.load(path)
+            new = old.matched(space)
+            if new is old:
+                print(f"{name}: そろえてある（そのまま）", flush=True)
+                continue
+            new.save(path)
+            print(f"{name}: 大きさをそろえ直した", flush=True)
+        return 0
     index_path = SPACE_IR_DIR / "index.json"
     index = (json.loads(index_path.read_text(encoding="utf-8"))
              if index_path.exists() else {})

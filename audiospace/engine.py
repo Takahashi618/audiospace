@@ -267,6 +267,16 @@ class SpatialEngine:
         self.distance_model: DistanceModel = distance_model
         self.reference_distance = float(reference_distance)
         self.max_distance = float(max_distance)
+        # 基準の距離が 0 だと、すべての音が無音になる（誤りも出ない）。
+        # 負の値や、基準より近い最大の距離も意味を持たない
+        if not (math.isfinite(self.reference_distance)
+                and self.reference_distance > 0.0):
+            raise ValueError("reference_distance must be a positive number, "
+                             f"got {reference_distance}")
+        if not (math.isfinite(self.max_distance)
+                and self.max_distance >= self.reference_distance):
+            raise ValueError("max_distance must be a number not below "
+                             f"reference_distance, got {max_distance}")
         self.front_back_depth = float(front_back_depth)
         self.elevation_emphasis = float(elevation_emphasis)
         self.reverb = reverb
@@ -1485,7 +1495,8 @@ class SpatialEngine:
             kernel = None
             if code == 0 and out.exists():
                 try:
-                    found = SpaceIr.load(out).resampled(self.sample_rate)
+                    found = (SpaceIr.load(out).matched(space)
+                             .resampled(self.sample_rate))
                     kernel = ConvolutionReverb(found.tail, block=self.block,
                                                normalise=False)
                 except Exception as exc:          # noqa: BLE001

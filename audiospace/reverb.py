@@ -331,11 +331,21 @@ def band_reverb_for(space, sample_rate: int,
 class ConvolutionReverb:
     """Convolve the send bus with a measured or simulated stereo IR."""
 
+    #: 正規化の基準のレート。このレートの IR は、エネルギーを 1 にする
+    NORMALISE_RATE = 48000
+
     def __init__(self, ir: np.ndarray, block: int = 512,
-                 normalise: bool = True) -> None:
+                 normalise: bool = True,
+                 sample_rate: int | None = None) -> None:
+        """`sample_rate` は IR のレート。渡すと、正規化した響きの大きさが
+        レートによらず同じになる（同じ部屋の IR は、レートが2倍だと
+        エネルギーが半分になるのが正しい。どのレートでも 1 にそろえると、
+        96kHz では 3dB 大きく聞こえた）。渡さなければ今までどおり 1。"""
         ir = np.atleast_2d(np.asarray(ir, dtype=np.float32))
         if normalise:
             energy = float(np.sqrt(np.sum(ir.astype(np.float64) ** 2)))
+            if sample_rate and int(sample_rate) != self.NORMALISE_RATE:
+                energy *= math.sqrt(int(sample_rate) / self.NORMALISE_RATE)
             if energy > 0:
                 ir = ir / energy
         self._conv = MonoConvolver(ir, block=block)

@@ -774,11 +774,13 @@ def t_precise_tail() -> str:
 
     from audiospace import Space
     from audiospace.acoustics import space_preset
-    from audiospace.precise import (SpaceIr, _fast_tail_energy,
-                                    render_space_ir, space_key)
+    from audiospace.precise import (SpaceIr, _band_energy,
+                                    _fast_tail_energy, render_space_ir,
+                                    space_key)
     space = space_preset("carpet_room")
     made = render_space_ir(space, SR)
-    energy = float(np.sum(made.tail.astype(np.float64) ** 2))
+    # そろえるのは、聞こえる帯域（100〜4000Hz）のエネルギー
+    energy = _band_energy(made.tail, SR)
     target = _fast_tail_energy(space, SR)
     assert abs(energy / target - 1.0) < 0.02, (energy, target)
     # 光線追跡は毎回ランダムで、先頭の値は尖りの 2.6e-4〜5.5e-4 倍あたりを
@@ -4640,6 +4642,136 @@ def t_review5_route_avoids_closed_door() -> str:
     return (f"閉じた戸があっても {both.loss_db:.1f}dB（開いた遠回り）。"
             f"戸を開けると {opened.loss_db:.1f}dB")
 
+# -- 2026-11-18 の古いモジュールのレビュー -----------------------------------
+@test("review6: レートを変換した HRIR と残響の IR は、フィルタとしての利得が変わらない")
+def t_review6_resample_gain() -> str:
+    from audiospace.precise import SpaceIr
+    from audiospace.presets import BUILTIN_PRESETS, RoomIr
+    from audiospace.reverb import ConvolutionReverb
+    rng = np.random.default_rng(3)
+    # 低い周波数に寄せた応答（高い側はレートを下げると切れるので比べない）
+    base = np.cumsum(rng.standard_normal((2, 400)), axis=1)
+    base *= np.hanning(400)[None, :]
+    base = base.astype(np.float32)
+    want = base.sum(axis=1)
+    hrir = HrirSet(base[None], np.zeros(1), np.zeros(1), 48000)
+    tail = SpaceIr("k", "n", base, 48000)
+    room = RoomIr(BUILTIN_PRESETS["hall"], base, 48000)
+    worst = 0.0
+    for rate in (44100, 96000, 192000):
+        for got in (hrir.resampled(rate).data[0], tail.resampled(rate).tail,
+                    room.resampled(rate).ir):
+            ratio = got.sum(axis=1) / want
+            worst = max(worst, float(np.max(np.abs(ratio - 1.0))))
+    assert worst < 0.02, f"係数の和が変わった: {worst:.3f}"
+    assert hrir.resampled(48000) is hrir          # 同じレートは何もしない
+    # 正規化: レートを渡すと、48kHz で 1、96kHz で半分のエネルギーになる
+    for rate, energy in ((48000, 1.0), (96000, 0.5), (44100, 48000 / 44100)):
+        rev = ConvolutionReverb(room.resampled(rate).ir, block=BLOCK,
+                                sample_rate=rate)
+        got = _reverb_energy(rev)
+        assert abs(got / energy - 1.0) < 0.02, (rate, got)
+    plain = _reverb_energy(ConvolutionReverb(room.resampled(96000).ir,
+                                             block=BLOCK))
+    assert abs(plain - 1.0) < 0.02                # 渡さなければ今までどおり
+    return f"3つのレートで、係数の和のずれは最大 {worst * 100:.1f}%"
+
+
+def _reverb_energy(rev) -> float:
+    """残響にインパルスを入れたときの応答のエネルギー。"""
+    x = np.zeros((40, BLOCK), dtype=np.float32)
+    x[0, 0] = 1.0
+    y = np.concatenate([rev.process(b) for b in x])
+    return float(np.sum(y.astype(np.float64) ** 2))
+
+
+@test("review6: 精密版の尾は、聞こえる帯域で速い版と大きさがそろう（前の版の尾は読むときに直す）")
+def t_review6_tail_level_band() -> str:
+    from audiospace.acoustics import space_preset
+    from audiospace.precise import (LEVEL_MATCH, SPACE_IR_DIR, SpaceIr,
+                                    _band_energy, _fast_tail_energy,
+                                    space_key)
+    space = space_preset("concrete_room")
+    target = _fast_tail_energy(space, SR)
+    rng = np.random.default_rng(5)
+    raw = (rng.standard_normal((2, SR)) * np.exp(-np.arange(SR) / 9000.0)
+           ).astype(np.float32)
+    old = SpaceIr(space_key(space), "x", raw, SR, meta={"n_rays": 1})
+    new = old.matched(space)
+    assert new.meta["level_match"] == LEVEL_MATCH and "level_match" not in old.meta
+    assert abs(_band_energy(new.tail, SR) / target - 1.0) < 0.01
+    assert new.matched(space) is new, "印のある尾をもう一度直した"
+    off = SpaceIr("k", "x", raw, SR, meta={"level_match": "none"})
+    assert off.matched(space) is off, "そろえない指定の尾を直した"
+    baked = SPACE_IR_DIR / f"{space_key(space)}_{SR}.npz"
+    note = "焼き込みは無い"
+    if baked.exists():
+        tail = SpaceIr.load(baked)
+        assert tail.meta.get("level_match") == LEVEL_MATCH, "焼き込みに印が無い"
+        ratio = _band_energy(tail.tail, SR) / target
+        assert abs(ratio - 1.0) < 0.01, ratio
+        note = f"焼き込みの尾と速い版の比 {ratio:.3f}"
+    return f"印の無い尾は読むときにそろえ直す。{note}"
+
+
+@test("review6: 意味のない値（大きさの NaN、基準の距離 0 など）は受け取るときに断る")
+def t_review6_reject_bad_values() -> str:
+    from audiospace import Space
+    walls = {f: "rough_concrete" for f in ("west", "east", "south", "north",
+                                           "floor", "ceiling")}
+    nan, inf = float("nan"), float("inf")
+    bad_spaces = [dict(size=(nan, 4, 3)), dict(size=(5, inf, 3)),
+                  dict(size=(5, 4)), dict(origin=(0, nan, 0)),
+                  dict(early_gain=nan), dict(late_gain=-1.0),
+                  dict(scattering=inf)]
+    for kw in bad_spaces:
+        args = dict(origin=(0, 0, 0), size=(5, 4, 3), materials=dict(walls))
+        args.update(kw)
+        try:
+            Space(**args)
+            raise AssertionError(f"受け付けた: {kw}")
+        except ValueError:
+            pass
+    Space((0, 0, 0), (5, 4, 3), dict(walls), early_gain=0.0, late_gain=0.0)
+    hrir = HrirSet.synthetic(sample_rate=SR)
+    bad_engines = [dict(reference_distance=0.0), dict(reference_distance=-1.0),
+                   dict(reference_distance=nan), dict(max_distance=0.5),
+                   dict(max_distance=nan)]
+    for kw in bad_engines:
+        try:
+            SpatialEngine(hrir, block=BLOCK, max_sources=2, **kw)
+            raise AssertionError(f"受け付けた: {kw}")
+        except ValueError:
+            pass
+    SpatialEngine(hrir, block=BLOCK, max_sources=2, reference_distance=2.0,
+                  max_distance=2.0)
+    return (f"空間 {len(bad_spaces)} 通りとエンジン {len(bad_engines)} 通りを断り、"
+            "境目の値は通す")
+
+
+@test("review6: ちょうどのレートが無いとき、求めるレート以上でいちばん近い IR を元にする")
+def t_review6_nearest_rate() -> str:
+    from audiospace.presets import (BUILTIN_PRESETS, RoomIr, by_nearest_rate,
+                                    load_room_ir)
+    names = [Path(f"hall_{r}.npz") for r in (44100, 48000, 96000)]
+    order = lambda rate: [p.name for p in by_nearest_rate(names, rate)]  # noqa: E731
+    assert order(96000)[0] == "hall_96000.npz"
+    assert order(88200)[0] == "hall_96000.npz"
+    assert order(46000) == ["hall_48000.npz", "hall_96000.npz",
+                            "hall_44100.npz"]
+    assert order(192000)[0] == "hall_96000.npz"      # 上が無ければいちばん高い
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        ir = np.zeros((2, 64), dtype=np.float32)
+        ir[:, 0] = 1.0
+        for rate in (44100, 48000):
+            RoomIr(BUILTIN_PRESETS["hall"], ir, rate).save(
+                Path(tmp) / f"hall_{rate}.npz")
+        got = load_room_ir("hall", 96000, tmp)
+        assert got.meta["resampled_from"] == 48000, got.meta
+        assert got.sample_rate == 96000
+    return "44.1k と 48k があれば、96k は 48k から作る"
+
+
 @test("review4: 遮蔽の地図はロックの外で作り、戸の開け閉めは作り直さない")
 def t_review4_occlusion_map_outside_lock() -> str:
     import audiospace.engine as engine_mod
@@ -4999,6 +5131,9 @@ TESTS = [
     # 2026-11-18 の全体のレビューの指摘
     t_review5_close_releases_stream, t_review5_teleport_occlusion_jumps,
     t_review5_route_avoids_closed_door, t_review5_callback_ducking,
+    # 2026-11-18 の古いモジュールのレビュー
+    t_review6_resample_gain, t_review6_tail_level_band,
+    t_review6_reject_bad_values, t_review6_nearest_rate,
 ]
 
 

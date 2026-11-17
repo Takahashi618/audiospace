@@ -499,6 +499,40 @@ def t_review2_records_broken() -> str:
     return "3通りの壊れ方で、退避して知らせ、保存し直せた"
 
 
+@test("review6: 型の違う値の入った記録は外し、使える記録は残して、写しを .broken に置く")
+def t_review6_records_bad_values() -> str:
+    good = dict(tag="good.sofa", label="耳介G", n_answered=16, n_correct=12,
+                n_fb_testable=8, n_fb_confusions=1, total_error_deg=90.0,
+                n_sessions=1, relative_deltas=[0.1], delta_directions=[8],
+                n_answered_hard=16, n_correct_hard=12, last_seen="2026-11-18")
+    bad = [dict(good, tag="a.sofa", n_answered_hard="12"),
+           dict(good, tag="b.sofa", relative_deltas=None),
+           dict(good, tag="c.sofa", delta_directions=[8, "x"]),
+           dict(good, tag="d.sofa", n_correct=True),
+           dict(good, tag="e.sofa", n_answered=-1),
+           dict(good, tag="f.sofa", total_error_deg=float("nan")),
+           dict(good, tag=5), dict(good, label=None),
+           dict(good, tag="g.sofa", unknown_field=1), "文字", 3, None]
+    folder = Path(tempfile.mkdtemp())
+    path = folder / "records.json"
+    text = json.dumps({"records": bad + [good]}, ensure_ascii=False)
+    path.write_text(text, encoding="utf-8")
+    store = RecordStore(path)                     # 例外を出さない
+    assert set(store.records) == {"good.sofa"}, store.records.keys()
+    assert f"{len(bad)}件" in store.load_error, store.load_error
+    assert path.exists(), "使える記録の入ったファイルを移してしまった"
+    assert (folder / "records.json.broken").read_text(
+        encoding="utf-8") == text, "写しが元と違う"
+    store.summary([("good.sofa", "耳介G")])       # 集計で例外にならない
+    store.detail_lines()
+    store.update([score("good.sofa", 8)], anchor_tag="good.sofa",
+                 n_directions=8)
+    store.save()
+    again = RecordStore(path)
+    assert set(again.records) == {"good.sofa"} and not again.load_error
+    return f"使えない {len(bad)} 件を外し、使える1件で集計と保存ができた"
+
+
 TESTS = [t_skill_drift, t_easy_excluded, t_easy_delta_excluded,
          t_anchor_zero, t_accumulate, t_min_trials,
          t_lineup_anchor, t_lineup_first, t_lineup_exhausted,
@@ -506,7 +540,7 @@ TESTS = [t_skill_drift, t_easy_excluded, t_easy_delta_excluded,
          t_progress, t_fb_rate, t_tag_key_any_os, t_path_migration,
          t_path_candidates,
          t_user_presets, t_user_presets_broken, t_review_presets_malformed,
-         t_review2_records_broken]
+         t_review2_records_broken, t_review6_records_bad_values]
 
 
 def main() -> int:

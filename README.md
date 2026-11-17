@@ -39,7 +39,7 @@ audiospace のコードは、AI（Anthropic の Claude）が書きました。�
 - 動作の確認と、直すか直さないかの判断
 - 公開、問い合わせへの対応、保守
 
-コードは自動テスト（299件）と作者の実機での確認で検証しています。それでも、
+コードは自動テスト（304件）と作者の実機での確認で検証しています。それでも、
 人が書いたコードと同じく、誤りが残っている可能性があります。無保証です。
 
 日本の文化庁や米国の著作権局の考え方では、AI が書いた部分には著作権が
@@ -61,7 +61,7 @@ The author did not write the code. The author's part was:
 - Checking the behaviour and deciding what to fix.
 - Publishing, answering questions and maintenance.
 
-The code is checked by 299 automated tests and by the author on real
+The code is checked by 304 automated tests and by the author on real
 hardware, but like any code it may still contain mistakes. It comes without
 warranty.
 
@@ -90,8 +90,8 @@ under the MIT License.
 wheel を入れる場合（ファイル名は実物に合わせる）:
 
 ```
-python -m pip install audiospace-0.8.1-py3-none-any.whl
-python -m pip install "audiospace-0.8.1-py3-none-any.whl[playback]"
+python -m pip install audiospace-0.8.2-py3-none-any.whl
+python -m pip install "audiospace-0.8.2-py3-none-any.whl[playback]"
 ```
 
 2行目は実機再生も使う場合。wheel だけの環境では焼き込み済みの残響 IR が
@@ -475,7 +475,10 @@ print(player.engine.late_status)     # 「精密版の残響」など、読み�
 拡散、空気吸収、像の方法と光線追跡）で作った尾に替える。方向つきの初期反射は
 エンジンのまま（聞き手の位置と向きに合わせて鳴らせるため）で、尾は反射が
 混ざり合った後（50〜150ms 以降）から使い、頭と終わりを滑らかにつなぐ。尾の
-大きさは速い版と同じエネルギーにそろえてあるので、切り替えても音量は変わらない。
+大きさは、足音や声が集まる帯域（100〜4000Hz）のエネルギーを速い版とそろえて
+あるので、切り替えても響きの大きさはほぼ変わらない（用意した部屋で、
+100〜1000Hz は -2.0〜+1.4dB、1〜4kHz は -0.6〜+0.4dB の差。測った値）。前の版が
+作って保存した尾は、読み込むときに同じそろえ方に直す。
 
 速い版（Eyring の式）との違いが出るのは、吸音が偏っている部屋。じゅうたんの
 床と吸音天井で壁は反射する部屋では、速い版の 0.27秒に対し精密版は 0.66秒
@@ -985,15 +988,15 @@ audiospace のフォルダで次を実行する:
 python -X utf8 tests\run_all.py
 ```
 
-これで5スイート計299件がまとめて走る（無音設定は内部で行う。表示の言語は
+これで5スイート計304件がまとめて走る（無音設定は内部で行う。表示の言語は
 日本語に固定する）。
 個別に走らせる場合:
 
 ```
-set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_tests.py         (ドメイン167件)
+set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_tests.py         (ドメイン171件)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_motion_tests.py  (首振り11件)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_quiz_tests.py    (クイズ39件)
-set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_records_tests.py (記録22件)
+set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_records_tests.py (記録23件)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_app_tests.py     (GUI構成60件)
 ```
 
