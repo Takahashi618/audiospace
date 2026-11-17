@@ -32,6 +32,25 @@ from audiospace import (BufferSource, CallbackSource, HrirSet,  # noqa: E402
                         relative_spherical, resampled_by, rt60_of)
 from audiospace.convolver import BinauralConvolver  # noqa: E402
 
+
+def _sounddevice():
+    """sounddevice を返す。読み込めない環境では、中身の無い代わりを置く。
+
+    音声の出口が無い機械（Linux の自動テストなど）では、import した時点で
+    PortAudio の初期化が失敗する。機器の一覧もストリームも偽物に差し替える
+    テストなので、初期化の2つの関数だけを持つ代わりで足りる。ライブラリが
+    中で import したときも、同じ代わりを受け取る。
+    """
+    try:
+        import sounddevice as sd
+    except Exception:                                 # noqa: BLE001
+        import types
+        sd = types.ModuleType("sounddevice")
+        sd._terminate = lambda: None
+        sd._initialize = lambda: None
+        sys.modules["sounddevice"] = sd
+    return sd
+
 OUT = Path(__file__).with_name("test_result.txt")
 SR = 48000
 BLOCK = 512
@@ -2386,7 +2405,7 @@ def t_reopen() -> str:
     キャッシュするので、再初期化なしでは挿し直したデバイスが見えない。
     また choose_output が失敗したとき device_lost が立たず、無音のまま
     正常顔になっていた。"""
-    import sounddevice as sd
+    sd = _sounddevice()
 
     import audiospace.player as player_mod
     from audiospace.device import DeviceChoice
@@ -3323,7 +3342,7 @@ class _FakeDevices:
         self.opened: list = []
 
     def __enter__(self) -> "_FakeDevices":
-        import sounddevice as sd
+        sd = _sounddevice()
 
         import audiospace.player as player_mod
         self._mods = (sd, player_mod)

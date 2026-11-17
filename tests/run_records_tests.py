@@ -311,6 +311,26 @@ def t_easy_delta_excluded() -> str:
             f"平均={c.mean_delta:+.2f}")
 
 
+@test("タグの正規化は、Windows の形と Mac・Linux の形のどちらのパスでもファイル名にする")
+def t_tag_key_any_os() -> str:
+    """Windows で作った記録を Mac で読む（その逆も）ときに、同じ耳介として
+    積み上がるように。動かしている OS によらず同じ結果になること。"""
+    from audiospace.records import _tag_key
+    bs = chr(92)
+    cases = {
+        "C:" + bs + "old" + bs + "viking" + bs + "subj_B.sofa": "subj_B.sofa",
+        "/home/me/hrtf/viking/subj_B.sofa": "subj_B.sofa",
+        "C:/mixed" + bs + "viking/subj_B.sofa": "subj_B.sofa",
+        "subj_B.sofa": "subj_B.sofa",
+        "viking/": "viking",
+        "viking" + bs: "viking",
+        "": "",
+    }
+    for tag, want in cases.items():
+        assert _tag_key(tag) == want, (tag, _tag_key(tag))
+    return f"{len(cases)} 通りとも同じファイル名になる"
+
+
 @test("旧形式（絶対パスのタグ）を読み込み時にファイル名へ移行する")
 def t_path_migration() -> str:
     """以前はタグが SOFA の絶対パスだったため、フォルダ移動や別の PC との行き来で
@@ -483,7 +503,8 @@ TESTS = [t_skill_drift, t_easy_excluded, t_easy_delta_excluded,
          t_anchor_zero, t_accumulate, t_min_trials,
          t_lineup_anchor, t_lineup_first, t_lineup_exhausted,
          t_lineup_too_small, t_roundtrip, t_corrupt, t_close_call,
-         t_progress, t_fb_rate, t_path_migration, t_path_candidates,
+         t_progress, t_fb_rate, t_tag_key_any_os, t_path_migration,
+         t_path_candidates,
          t_user_presets, t_user_presets_broken, t_review_presets_malformed,
          t_review2_records_broken]
 

@@ -45,7 +45,7 @@ The author did not write the code. The author's part was:
 - Checking the behaviour and deciding what to fix.
 - Publishing, answering questions and maintenance.
 
-The code is checked by 298 automated tests and by the author on real
+The code is checked by 299 automated tests and by the author on real
 hardware, but like any code it may still contain mistakes. It comes without
 warranty.
 
@@ -73,8 +73,8 @@ or working notes.
 Installing the wheel (use the real file name):
 
 ```
-python -m pip install audiospace-0.8.0-py3-none-any.whl
-python -m pip install "audiospace-0.8.0-py3-none-any.whl[playback]"
+python -m pip install audiospace-0.8.1-py3-none-any.whl
+python -m pip install "audiospace-0.8.1-py3-none-any.whl[playback]"
 ```
 
 The second line is for playing on a real device. With the wheel alone there
@@ -1089,7 +1089,7 @@ Run this in the audiospace folder:
 python -X utf8 tests\run_all.py
 ```
 
-It runs 5 suites, 298 tests in all (the silent setting is applied
+It runs 5 suites, 299 tests in all (the silent setting is applied
 internally). The test output is in Japanese, and the last line also says
 "all passed" in English. To run them one by one:
 
@@ -1097,7 +1097,7 @@ internally). The test output is in Japanese, and the last line also says
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_tests.py         (domain, 167)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_motion_tests.py  (head wobble, 11)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_quiz_tests.py    (quiz, 39)
-set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_records_tests.py (records, 21)
+set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_records_tests.py (records, 22)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_app_tests.py     (GUI structure, 60)
 ```
 
