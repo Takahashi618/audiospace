@@ -908,6 +908,83 @@ def t_rotation_render() -> str:
             f"頭上を前から後ろへ: 始め {over[0]:+.1f}dB、終わり {over[2]:+.1f}dB")
 
 
+@test("review7: 上下の聴き取りは、1巡半の問題数でも高さの回数がそろう")
+def t_elev_balanced() -> str:
+    from collections import Counter
+    heights = [el for el, _ in ELEVATION_LEVELS]
+    # アプリが使う問題数（8方向は 32通りの1巡半）と、ライブラリの既定
+    for diff, n in ((Difficulty.LEFT_RIGHT, 24), (Difficulty.FOUR, 32),
+                    (Difficulty.EIGHT, 48), (Difficulty.TWELVE, 48),
+                    (Difficulty.FOUR, 24)):
+        for seed in range(60):
+            s = ElevationSession(difficulty=diff, n_trials=n, seed=seed)
+            assert len(s.trials) == n
+            count = Counter(t.truth_el for t in s.trials)
+            got = [count.get(el, 0) for el in heights]
+            assert got == [n // 4] * 4, (diff.name, n, seed, got)
+            keys = [s.sound_key(t.truth_el, t.truth_deg) for t in s.trials]
+            assert all(a != b for a, b in zip(keys, keys[1:])), (
+                diff.name, n, seed)
+    # 高さの数で割り切れない問題数は、差が1問まで
+    for n in (5, 6, 7, 18, 27):
+        for seed in range(40):
+            s = ElevationSession(difficulty=Difficulty.EIGHT, n_trials=n,
+                                 seed=seed)
+            count = Counter(t.truth_el for t in s.trials)
+            got = [count.get(el, 0) for el in heights]
+            assert len(s.trials) == n and max(got) - min(got) <= 1, (n, got)
+    return "8方向・48問は高さごとに12問ずつ。割り切れない問題数でも差は1問まで"
+
+
+@test("review7: 回る向きの頭上の割合は 0 から 1 までで、範囲の外は断る")
+def t_rotation_share_range() -> str:
+    from audiospace.quiz import RotationSession
+    for share in (-0.5, -0.01, 1.01, 1.5, float("nan")):
+        try:
+            RotationSession(n_trials=24, seed=1, overhead_share=share)
+        except ValueError:
+            continue
+        raise AssertionError(f"{share} を受け付けた")
+    counts = []
+    for share in (0.0, 1 / 3, 0.5, 1.0):
+        s = RotationSession(n_trials=24, seed=1, overhead_share=share)
+        assert len(s.trials) == 24, (share, len(s.trials))
+        counts.append(sum(1 for t in s.trials if t.kind == "overhead"))
+    assert counts == [0, 8, 12, 24], counts
+    return f"範囲の外の5つを断り、0・3分の1・半分・1 は頭上が {counts} 問"
+
+
+@test("review7: 上下の聴き取りは、短い問題数でも同じ音が続かない")
+def t_elev_no_repeat() -> str:
+    tried = 0
+    for diff in Difficulty:
+        for n in range(2, 41):
+            for seed in range(12):
+                s = ElevationSession(difficulty=diff, n_trials=n, seed=seed)
+                keys = [s.sound_key(t.truth_el, t.truth_deg)
+                        for t in s.trials]
+                assert all(a != b for a, b in zip(keys, keys[1:])), (
+                    diff.name, n, seed)
+                tried += 1
+    return f"難易度4つ × 2〜40問 × 乱数12通り（{tried}通り）で、隣り合いは0"
+
+
+@test("review7: 上下用の耳介の選定は、水平の問題を取り違えの分母に入れない")
+def t_elev_calib_testable() -> str:
+    from audiospace.quiz import ElevationCalibrationSession
+    s = ElevationCalibrationSession([("a", "耳介A")], trials_per_candidate=12,
+                                    seed=1)
+    level = sum(1 for t in s.trials if t.truth_el == 0.0)
+    for t in s.trials:                       # 必ず逆（水平は上）を答える
+        t.answer_el = -45.0 if t.truth_el > 0 else 45.0
+    sc = s.scores()[0]
+    assert sc.n_answered == 12 and level == 3
+    assert sc.n_fb_testable == 9, sc.n_fb_testable
+    assert sc.n_front_back == 9 and sc.front_back_rate == 1.0, (
+        sc.n_front_back, sc.front_back_rate)
+    return "12問のうち水平の3問は数えず、全部を逆に答えると 9/9"
+
+
 TESTS = [t_roundtrip, t_left_is_west, t_names, t_error_wrap, t_front_back,
          t_fb_testable, t_fb_denominator, t_fb_warns,
          t_session_build, t_session_score, t_session_overrun,
@@ -919,6 +996,8 @@ TESTS = [t_roundtrip, t_left_is_west, t_names, t_error_wrap, t_front_back,
          t_ab_alternates, t_ab_summary, t_ab_fb_warning, t_ab_with_yaw,
          t_elev_build, t_elev_front, t_elev_score, t_elev_render,
          t_pitch_render, t_roll_render, t_elev_calib,
+         t_elev_balanced, t_elev_calib_testable,
+         t_rotation_share_range, t_elev_no_repeat,
          t_rotation_build, t_rotation_path, t_rotation_score,
          t_rotation_render]
 

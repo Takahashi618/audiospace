@@ -32,7 +32,7 @@ the program to choose one.
 """
 from __future__ import annotations
 
-__version__ = "0.8.3"
+__version__ = "0.8.4"
 
 from .acoustics import (FACE_LABELS, FACE_MATERIALS, FURNISH_LEVELS,
                         FURNISHINGS, SPACE_KINDS, SPACE_PRESETS, Furnishing,

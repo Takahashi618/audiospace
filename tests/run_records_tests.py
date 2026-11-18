@@ -188,6 +188,26 @@ def t_lineup_exhausted() -> str:
     return f"全種検証済みの状態で顔ぶれ={tags}"
 
 
+@test("review7: 新顔が足りない回も、下位の再検証で枠の数にそろえる")
+def t_lineup_few_left() -> str:
+    sizes = []
+    for n_done in range(len(POOL) + 1):
+        store = fresh_store()
+        for i, (tag, _) in enumerate(POOL[:n_done]):
+            store.update([score(tag, 8 + i)], anchor_tag=POOL[0][0],
+                         n_directions=8)
+        lineup, anchor = store.build_lineup(POOL, slots=4)
+        tags = [t for t, _ in lineup]
+        assert len(tags) == 4 and len(set(tags)) == 4, (n_done, tags)
+        if n_done:
+            assert tags[0] == anchor, (n_done, tags, anchor)
+        # まだ試していない耳介は、必ず全部入る（4枠に収まる限り）
+        new = [t for t, _ in POOL[n_done:]][:4 - bool(n_done)]
+        assert all(t in tags for t in new), (n_done, tags, new)
+        sizes.append(len(tags))
+    return f"検証済みが 0〜{len(POOL)} 種類のどの回も、顔ぶれは {set(sizes)} 種類"
+
+
 @test("2枠未満は拒否する")
 def t_lineup_too_small() -> str:
     store = fresh_store()
@@ -536,6 +556,7 @@ def t_review6_records_bad_values() -> str:
 TESTS = [t_skill_drift, t_easy_excluded, t_easy_delta_excluded,
          t_anchor_zero, t_accumulate, t_min_trials,
          t_lineup_anchor, t_lineup_first, t_lineup_exhausted,
+         t_lineup_few_left,
          t_lineup_too_small, t_roundtrip, t_corrupt, t_close_call,
          t_progress, t_fb_rate, t_tag_key_any_os, t_path_migration,
          t_path_candidates,

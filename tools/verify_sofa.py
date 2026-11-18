@@ -40,6 +40,13 @@ def band_energy(x: np.ndarray, lo: float, hi: float, sr: int) -> float:
     return float(np.sum(spec[sel] ** 2))
 
 
+def gain_at(ir: np.ndarray, freqs: np.ndarray, sr: int) -> np.ndarray:
+    """Magnitude of the filter `ir` (ears x taps) at `freqs`, per ear."""
+    n = np.arange(ir.shape[-1])
+    kernel = np.exp(-2j * np.pi * np.outer(freqs, n) / sr)
+    return np.abs(ir @ kernel.T)
+
+
 def inspect(path: Path) -> HrirSet:
     hrir = HrirSet.from_sofa(path)
     log(f"file      : {path.name}")
@@ -165,9 +172,15 @@ def check_resample(hrir: HrirSet) -> None:
         f"{out.n_directions} directions preserved")
     ir_a = hrir.data[hrir.index_for(90.0, 0.0)]
     ir_b = out.data[out.index_for(90.0, 0.0)]
-    ratio = (float(np.sqrt(np.mean(ir_b ** 2)))
-             / max(float(np.sqrt(np.mean(ir_a ** 2))), 1e-12))
-    log(f"  rms preserved to within {abs(1 - ratio) * 100:.1f}%")
+    # What must survive a rate change is the gain at each frequency, not the
+    # rms of the samples: the same filter at a lower rate has fewer, larger
+    # samples, so its rms differs by about the rate ratio by design.
+    freqs = np.linspace(500.0, 4000.0, 36)
+    ratio = (float(np.mean(gain_at(ir_b, freqs, out.sample_rate)))
+             / max(float(np.mean(gain_at(ir_a, freqs, hrir.sample_rate))),
+                   1e-12))
+    log(f"  gain from 500 to 4000 Hz preserved to within "
+        f"{abs(1 - ratio) * 100:.1f}%")
 
 
 def main() -> int:

@@ -560,11 +560,17 @@ class HelpDialog(wx.Dialog):
 
 
 class MainFrame(wx.Frame):
-    """設定と4つのモードを持つ1画面構成。"""
+    """設定欄、状況の欄、結果の一覧を持つ1画面構成。モードはキーで始める
+    （一覧は F1 の説明）。"""
 
     def __init__(self, preset_path: Path | None = None,
-                 settings_path: Path | None = None) -> None:
+                 settings_path: Path | None = None,
+                 log_dir: Path | None = None) -> None:
         super().__init__(None, title=APP_TITLE, size=(820, 680))
+        # 結果のファイルと耳介の通算成績の置き場所。テストと文書作りは別の
+        # 場所を渡す（利用者の成績を読んで、顔ぶれや問題数が変わらないように。
+        # 壊れたファイルを退ける処理が、利用者のフォルダで動かないように）
+        self.log_dir = Path(log_dir) if log_dir is not None else LOG_DIR
         # 自分で作った空間と残響（設定欄のボタンから作る）。テストは別の
         # 場所を渡す（利用者のファイルを書き換えないように）
         self.user_presets = UserPresetStore(preset_path or USER_PRESETS_PATH)
@@ -619,10 +625,10 @@ class MainFrame(wx.Frame):
         self._begin_gen = 0
         # 答えた直後（次の問題が鳴るまで）の印。この間の F4 は受け付けない
         self._pending_next = False
-        self.records = RecordStore(LOG_DIR / "pinna_records.json")
+        self.records = RecordStore(self.log_dir / "pinna_records.json")
         # 上下用の耳介の通算成績。前後用とは別のファイルに積み上げる
         # （前後に合う耳介と上下に合う耳介は同じとは限らない）
-        self.records_elev = RecordStore(LOG_DIR / "pinna_records_elev.json",
+        self.records_elev = RecordStore(self.log_dir / "pinna_records_elev.json",
                                         fb_name=tr("上下", "up/down"))
         # 繰り返し再生。スクリーンリーダーの読み上げに出題音が紛れて
         # 聞き取れないことがあるので、回答するまで間を空けて鳴らし直す。
@@ -741,8 +747,6 @@ class MainFrame(wx.Frame):
         grid.Add(self.btn_space_edit, 0)
         self.refresh_user_choices()
 
-        # 精密な残響: 空間の残響を、pyroomacoustics で精密に計算した尾にする
-        # （用意した閉じた部屋は焼き込み済み。開いた面のある空間は速い版のまま）
         # 置いてあるもの。選んでいる空間に家具と人を足す（部屋の大きさは
         # 同じでも、物や人がいると残響が短くなり、反射が散らされる）
         lbl = label(tr("家具の量 (&M)。閉じた部屋のときだけ効きます",
@@ -762,6 +766,8 @@ class MainFrame(wx.Frame):
         self.spn_people.SetName(tr("人の数", "Number of people"))
         add(lbl, self.spn_people)
 
+        # 精密な残響: 空間の残響を、pyroomacoustics で精密に計算した尾にする
+        # （用意した閉じた部屋は焼き込み済み。開いた面のある空間は速い版のまま）
         lbl = label(tr("精密な残響 (&Q)", "Precise reverb (&Q)"),
                     tr("精密な残響", "Precise reverb"))
         self.chk_precise = wx.CheckBox(
@@ -2624,7 +2630,7 @@ class MainFrame(wx.Frame):
         する。印がないと、アプリが記録した分をもう一度取り込んで
         二重集計になる。
         """
-        marker = LOG_DIR / "imported_calib.txt"
+        marker = self.log_dir / "imported_calib.txt"
         try:
             names = set()
             if marker.exists():
@@ -2654,7 +2660,7 @@ class MainFrame(wx.Frame):
         読み上げる（ここで警告を出すと成功報告と二重になる）。
         """
         stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = LOG_DIR / f"{self.mode}_{stamp}.txt"
+        path = self.log_dir / f"{self.mode}_{stamp}.txt"
         lines = [tr(f"モード: {self.mode}", f"Mode: {self.mode}"),
                  tr(f"日時: {dt.datetime.now():%Y-%m-%d %H:%M:%S}",
                     f"Date: {dt.datetime.now():%Y-%m-%d %H:%M:%S}"),
@@ -2666,7 +2672,7 @@ class MainFrame(wx.Frame):
                  tr("詳細:", "Details:")]
         lines.extend(f"  {line}" for line in session.detail_lines())
         try:
-            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            self.log_dir.mkdir(parents=True, exist_ok=True)
             path.write_text("\n".join(lines), encoding="utf-8")
         except OSError:
             return path, False

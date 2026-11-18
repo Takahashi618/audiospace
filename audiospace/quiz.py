@@ -888,6 +888,10 @@ class ElevationSession(QuizSession):
         """高さと方位の全組み合わせをシャッフルして並べる。
 
         組み合わせ単位で一巡させるので、どの高さも同じ回数ずつ出る。
+        問題数が組み合わせの数の倍数でないときの端数も、高さごとに同じ数
+        ずつ取る（一巡を途中で切ると、8方向・48問のような1巡半で、ある
+        高さが8回、別の高さが15回というように偏る）。端数が高さの数で
+        割り切れない分だけ、1問の差が残る。
         完全に同じ音が続くと、直前の記憶で答えられるので避ける。真上は
         方位が違っても同じ音なので、一巡の中にも同じ音が複数入る。
         境目だけでなく全体を見て、隣り合ったら後ろの別の音と入れ替える。
@@ -897,11 +901,13 @@ class ElevationSession(QuizSession):
         combos = [(el, az) for el, _ in self.levels
                   for az in self.azimuths()]
         picks: list[tuple[float, float]] = []
-        while len(picks) < self.n_trials:
+        rounds, rest = divmod(max(0, self.n_trials), len(combos))
+        for _ in range(rounds):
             batch = combos[:]
             self._rng.shuffle(batch)
             picks.extend(batch)
-        picks = picks[:self.n_trials]
+        if rest:
+            picks.extend(self._partial_round(rest))
         if self.avoid_same_sound:
             self._separate_same_sounds(picks)
         for i, (el, az) in enumerate(picks):
@@ -909,11 +915,30 @@ class ElevationSession(QuizSession):
                 index=i, truth_deg=az, distance_m=self.distance_m,
                 truth_el=el))
 
+    def _partial_round(self, count: int) -> list[tuple[float, float]]:
+        """一巡に満たない `count` 問。高さごとに同じ数ずつ（割り切れない分は
+        乱数で選んだ高さに1問ずつ）取り、方位は高さごとに重ならないよう選ぶ。"""
+        heights = [el for el, _ in self.levels]
+        azimuths = list(self.azimuths())
+        each, extra = divmod(count, len(heights))
+        more = set(self._rng.sample(range(len(heights)), extra))
+        batch: list[tuple[float, float]] = []
+        for i, el in enumerate(heights):
+            n = each + (1 if i in more else 0)
+            batch.extend((el, az) for az in self._rng.sample(azimuths, n))
+        self._rng.shuffle(batch)
+        return batch
+
     def _separate_same_sounds(self, picks: list[tuple[float, float]]) -> None:
         """同じ音の隣り合いを、入れ替えでなくす（その場で書き換える）。
 
         入れ替えるのは、入れ替えた後にどちらの位置でも新しい隣り合いが
         できないときだけ。前方に相手がいなければ後方も探す。
+
+        高さの回数をそろえてあるので（`_build`）、同じ音（真上）は多くても
+        全体の4分の1ほどで、入れ替えの相手は必ず見つかる。一巡を途中で
+        切っていたころは、短い問題数で真上が偏って多く入り、隣り合いが
+        残ることがあった。
         """
         key = self.sound_key
 
@@ -1106,7 +1131,12 @@ class ElevationCalibrationSession(ElevationSession):
         return trial.index % self.trials_per_candidate == 0
 
     def scores(self) -> list[CandidateScore]:
-        """耳介ごとの成績。前後の取り違えの欄に上と下の取り違えを入れる。"""
+        """耳介ごとの成績。前後の取り違えの欄に上と下の取り違えを入れる。
+
+        取り違えを試せた数には、正解が水平の問題を入れない（水平の音を
+        上と下に取り違えることはできない。入れると、取り違えの割合が
+        実際より低く出る。前後で真横の問題を入れないのと同じ）。
+        """
         labels = dict(self.candidates)
         table = {tag: CandidateScore(tag, labels[tag])
                  for tag, _ in self.candidates}
@@ -1115,7 +1145,7 @@ class ElevationCalibrationSession(ElevationSession):
             score.n_answered += 1
             score.n_correct += int(t.correct)
             score.n_front_back += int(t.up_down)
-            score.n_fb_testable += 1
+            score.n_fb_testable += int(t.truth_el != 0.0)
             score.total_error_deg += t.error_deg
         return sorted(table.values(), key=lambda s: s.rank_key)
 
@@ -1285,6 +1315,12 @@ class RotationSession(QuizSession):
                  overhead_share: float = 1 / 3) -> None:
         self.include_overhead = bool(include_overhead)
         self.overhead_share = float(overhead_share)
+        # 範囲の外だと、水平の問題の数が負になり、問題の数が n_trials と
+        # 合わなくなる
+        if not 0.0 <= self.overhead_share <= 1.0:
+            raise ValueError(tr(
+                f"overhead_share は 0 から 1 までです: {overhead_share!r}",
+                f"overhead_share must be from 0 to 1: {overhead_share!r}"))
         super().__init__(difficulty=Difficulty.EIGHT, n_trials=n_trials,
                          distance_m=distance_m, seed=seed)
 

@@ -311,9 +311,11 @@ def make_frame():
     app = wx.App.Get() or wx.App(False)
     tmp = tempfile.TemporaryDirectory(prefix="audiospace_manual_")
     # 設定のファイルも一時フォルダにする（利用者が保存した選択を、表の
-    # 「起動時の値」として書かないように）
+    # 「起動時の値」として書かないように）。耳介の通算成績も同じ（成績が
+    # あると耳介の選定の顔ぶれが変わる。文書は成績の無い状態で作る）
     frame = MainFrame(preset_path=Path(tmp.name) / "user_presets.json",
-                      settings_path=Path(tmp.name) / "app_settings.json")
+                      settings_path=Path(tmp.name) / "app_settings.json",
+                      log_dir=Path(tmp.name) / "logs")
     return app, frame, tmp
 
 
@@ -771,7 +773,8 @@ def run_one(language: str, check_only: bool) -> int:
 def main(argv: list[str]) -> int:
     check_only = "--check" in argv
     if "--lang" in argv:
-        language = argv[argv.index("--lang") + 1]
+        at = argv.index("--lang") + 1
+        language = argv[at] if at < len(argv) else ""
         if language not in DOCS:
             print(f"--lang は {' か '.join(DOCS)} です")
             return 2

@@ -128,6 +128,14 @@ def main() -> int:
                       "(the measured values are unchanged)")
         mod_ja.append("SOFA から NumPy の npz 形式に変換（測定値は変えていない）")
 
+    # 選定の経緯は既定の耳介（聴取テストで選んだもの）の話なので、ほかの
+    # 耳介を焼くときは書かない
+    notes = {}
+    if args.pinna == DEFAULT_PINNA:
+        notes["selection_note"] = (
+            "聴取テスト（12方向・首振りあり）で選定。"
+            "上位3種は同着だったが、この耳介のみ"
+            "判別可能な難易度72問で前後の取り違えゼロ。")
     out = Path(args.out)
     path = hrir.save_npz(
         out,
@@ -141,9 +149,7 @@ def main() -> int:
         attribution_ja=ATTRIBUTION_JA.format(mod_ja="・".join(mod_ja)),
         modifications="; ".join(mod_en),
         full_sphere=bool(args.keep_elevation),
-        selection_note=("聴取テスト（12方向・首振りあり）で選定。"
-                        "上位3種は同着だったが、この耳介のみ"
-                        "判別可能な難易度72問で前後の取り違えゼロ。"),
+        **notes,
     )
 
     size_kb = path.stat().st_size / 1024

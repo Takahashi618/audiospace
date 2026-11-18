@@ -5,7 +5,7 @@
 空間を登録してあるので、境目を越えると響きが 0.3秒かけてつなぎ替わり、
 出てきた場所の残響は自然に消えていく。
 
-作るファイル: demo/out/space_walk.wav（48kHz、ステレオ、約30秒）。
+作るファイル: demo/out/space_walk.wav（48kHz、ステレオ、約46秒）。
 ヘッドホンで聞く。どの時刻にどこにいるかは、実行すると表示する。
 
 Run: python -X utf8 demo\\space_walk.py

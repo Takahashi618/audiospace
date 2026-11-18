@@ -1795,6 +1795,102 @@ def t_english_ui(frame: MainFrame) -> str:
     return lines[0] if lines else ""
 
 
+@test("review7: 結果と通算成績の置き場所は差し替えられ、成績があっても文書の問題数は変わらない")
+def t_log_dir(frame: MainFrame) -> str:
+    import demo.localization_app as app_mod
+    from audiospace.quiz import CandidateScore, QuizSession
+    from audiospace.records import RecordStore
+
+    # この試験の画面は、利用者の logs ではなく一時フォルダを使っている
+    assert frame.log_dir != app_mod.LOG_DIR, frame.log_dir
+    assert frame.records.path.parent == frame.log_dir
+    assert frame.records_elev.path.parent == frame.log_dir
+    saved_mode = frame.mode
+    try:
+        frame.mode = "quiz"
+        path, ok = frame.save_log(QuizSession(n_trials=1, seed=1), "x")
+        assert ok and path.parent == frame.log_dir and path.exists(), path
+        path.unlink()
+    finally:
+        frame.mode = saved_mode
+    # 21種類のうち19種類が検証済みの成績があっても、耳介の選定は枠の数の
+    # 顔ぶれで始まる（マニュアルの問題数と同じ）
+    with tempfile.TemporaryDirectory() as tmp:
+        logs = Path(tmp) / "logs"
+        logs.mkdir()
+        pool = [(p.name, label) for label, p in frame.hrtf_choices
+                if p is not None]
+        if len(pool) < 6:
+            return "実測 HRTF が少ないので、置き場所だけ確かめた"
+        store = RecordStore(logs / "pinna_records.json")
+        for i, (tag, label) in enumerate(pool[:len(pool) - 2]):
+            store.update([CandidateScore(tag, label, 24, 24 - i % 5, 0, 16,
+                                         10.0 * (i % 5))], pool[0][0],
+                         n_directions=8)
+        store.save()
+        other = MainFrame(preset_path=Path(tmp) / "user_presets.json",
+                          settings_path=Path(tmp) / "app_settings.json",
+                          log_dir=logs)
+        try:
+            assert len(other.records.records) == len(pool) - 2
+            lineup, _ = other.records.build_lineup(
+                [(str(p), label) for label, p in other.hrtf_choices
+                 if p is not None], 5)
+            assert len(lineup) == 5, lineup
+        finally:
+            other.Destroy()
+    return "一時フォルダの成績を読み、残り2種類でも顔ぶれは5種類"
+
+
+@test("review7: 成績のまとめの道具は、日本語と英語のどちらの結果のファイルも読める")
+def t_report_brief(frame: MainFrame) -> str:
+    sys.path.insert(0, str(ROOT / "tools"))
+    import report_records as rr
+
+    ja = ("モード: quiz\n設定: HRTF は実測 Viking 耳介E、音はノイズ、"
+          "首振りは標準、首かしげはなし、難易度は8方向、前後の強調は35パーセント。\n\n"
+          "結果: 16問中12問正解、正答率75パーセント。平均誤差20度。"
+          "前後を試せた12問のうち、取り違えが3問、25パーセントでした。\n")
+    en = ("Mode: quiz\nSettings: HRTF: Measured Viking pinna E. Sound: Noise. "
+          "Head wobble: Standard. Head tilt: None. Up/down emphasis: 0 "
+          "percent. Difficulty: 8 directions. Front/back emphasis: 35 "
+          "percent.\n\nResults: 12 of 16 correct, 75 percent. Mean error 20 "
+          "degrees. Of the 12 questions that tested front and back, 3 were "
+          "confused, 25 percent.\n")
+    calib_en = ("Settings: HRTF: switched per question while choosing a "
+                "pinna. Sound: Noise. Head wobble: Standard. Head tilt: None. "
+                "Difficulty: 8 directions. Front/back emphasis: 35 percent."
+                "\nResults: The best was A. Overall, 2 of the 24 questions "
+                "that tested front and back were confused.\nDetails:\n"
+                "  A: 88 percent correct (14 of 16), front/back confusions 1 "
+                "of 12, mean error 6 degrees\n"
+                "  B: 50 percent correct (8 of 16), front/back confusions 1 "
+                "of 12, mean error 40 degrees\n")
+    clean_en = ("Results: 16 of 16 correct, 100 percent. No front/back "
+                "confusions in the 12 questions that tested front and back.")
+    out = [rr.brief_from_text("quiz_20260101_120000", t)
+           for t in (ja, en, calib_en, clean_en)]
+    for line, hrtf, wobble in ((out[0], "実測 Viking 耳介E", "標準"),
+                               (out[1], "Measured Viking pinna E",
+                                "Standard")):
+        assert "120000" in line and "12" in line and "16" in line, line
+        assert "(75%)" in line and "3" in line, line
+        assert hrtf in line and wobble in line and "?" not in line, line
+    assert "8方向" in out[0] and "8 directions" in out[1], out[:2]
+    assert "22" in out[2] and "32" in out[2] and "(69%)" in out[2], out[2]
+    assert "2" in out[2].split("(69%)")[1] and "24" in out[2], out[2]
+    assert "(100%)" in out[3] and "0" in out[3].split("(100%)")[1], out[3]
+    # 取ってきたファイルの中身の確かめと、計測の道具の使い方の表示
+    import bench_space
+    import fetch_viking_hrtf as fetch
+    assert fetch.looks_right("subj_A.sofa", b"\x89HDF\r\n\x1a\nxx", 10) == ""
+    assert fetch.looks_right("documentation.pdf", b"%PDF-1.7", None) == ""
+    assert fetch.looks_right("subj_A.sofa", b"<html>404</html>", None)
+    assert fetch.looks_right("subj_A.sofa", b"\x89HDF\r\n\x1a\nxx", 99)
+    assert bench_space.main(["a", "b", "c"]) == 2
+    return "日本語と英語の結果を同じ数に読み、壊れた取得と余分な引数を断る"
+
+
 @test("マニュアルとはじめにお読みくださいが、今のコードと合っている")
 def t_manual_current(frame: MainFrame) -> str:
     # 画面をもう1つ作るので、別のプロセスで調べる（この試験の画面を乱さない）
@@ -2065,13 +2161,17 @@ def t_settings_unusable(frame: MainFrame) -> str:
 # 設定の引き継ぎ（2026-11-18）
 TESTS += [t_settings_restore, t_settings_unusable]
 
+# 結果と通算成績の置き場所（2026-11-18）
+TESTS += [t_log_dir, t_report_brief]
+
 
 def main() -> int:
     app = wx.App(False)
     # 自作の空間と残響は一時フォルダに保存する（利用者のファイルを書き換えない）
     presets_dir = tempfile.TemporaryDirectory()
     frame = MainFrame(preset_path=Path(presets_dir.name) / "user_presets.json",
-                      settings_path=Path(presets_dir.name) / "app_settings.json")
+                      settings_path=Path(presets_dir.name) / "app_settings.json",
+                      log_dir=Path(presets_dir.name) / "logs")
     log(f"localization_app 構成テスト — wxPython {wx.version()}")
     log("=" * 74)
     for fn in TESTS:

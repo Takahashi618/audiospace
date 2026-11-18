@@ -383,7 +383,9 @@ class RecordStore:
         """今回のセッションで比べる顔ぶれを決める。
 
         チャンピオンがいれば必ず1枠に入れる（基準として同席させないと、
-        上達の影響と耳介の差を切り分けられない）。残りを新顔で埋める。
+        上達の影響と耳介の差を切り分けられない）。残りを新顔で埋め、新顔が
+        足りなければ順位の下位を再検証に回して、枠の数にそろえる（そろえ
+        ないと、残りの耳介が少なくなった回だけ問題数が減る）。
 
         Returns (候補リスト, 基準の tag)。候補・基準とも、返すのは
         呼び出し側が渡した形のまま（アプリはパスを渡し、それで SOFA を
@@ -403,14 +405,14 @@ class RecordStore:
             lineup.append(original)
         lineup.extend(self.next_challengers(all_candidates,
                                             slots - len(lineup)))
-        if len(lineup) < 2:
-            # 新顔が尽きた。順位下位を再検証に回す。
+        if len(lineup) < slots:
+            # 新顔が足りない。順位下位を再検証に回す。
             for rec in reversed(self.ranking()):
+                if len(lineup) >= slots:
+                    break
                 cand = by_key.get(rec.tag)
                 if cand is not None and all(cand[0] != t for t, _ in lineup):
                     lineup.append(cand)
-                if len(lineup) >= slots:
-                    break
         return lineup, anchor
 
     def progress_text(self, all_candidates: list[tuple[str, str]]) -> str:

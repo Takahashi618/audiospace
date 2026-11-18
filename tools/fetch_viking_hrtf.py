@@ -32,6 +32,20 @@ SUBJECTS = [chr(c) for c in range(ord("A"), ord("T") + 1)] + ["Z"]
 EXTRA = ["documentation.pdf"]
 RETRIES = 3
 TIMEOUT = 120
+# What each kind of file must start with.  A SOFA file is a netCDF file
+# (HDF5 container, or the classic format).  An error page saved under the
+# name of a data file would otherwise look like a finished download.
+SIGNATURES = {".sofa": (b"\x89HDF\r\n\x1a\n", b"CDF"), ".pdf": (b"%PDF",)}
+
+
+def looks_right(name: str, data: bytes, expected_size: int | None) -> str:
+    """Return "" if `data` looks like the file `name`, else what is wrong."""
+    if expected_size is not None and len(data) != expected_size:
+        return f"got {len(data)} bytes, the server said {expected_size}"
+    heads = SIGNATURES.get(Path(name).suffix.lower())
+    if heads and not data.startswith(heads):
+        return f"not a {Path(name).suffix} file (starts with {data[:8]!r})"
+    return ""
 
 
 def fetch(name: str, dest: Path) -> tuple[bool, str]:
@@ -44,6 +58,12 @@ def fetch(name: str, dest: Path) -> tuple[bool, str]:
                 url, headers={"User-Agent": "audiospace-dataset-fetch/1.0"})
             with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                 data = resp.read()
+                length = resp.headers.get("Content-Length")
+            wrong = looks_right(name, data,
+                                int(length) if length and length.isdigit()
+                                else None)
+            if wrong:
+                raise OSError(wrong)
             tmp = dest.with_suffix(dest.suffix + ".part")
             tmp.write_bytes(data)
             tmp.replace(dest)
