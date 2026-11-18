@@ -4772,6 +4772,56 @@ def t_review6_nearest_rate() -> str:
     return "44.1k と 48k があれば、96k は 48k から作る"
 
 
+@test("review6: linear の距離の減衰は、rolloff が 1 より大きくても負にならない")
+def t_review6_linear_not_negative() -> str:
+    from audiospace.geometry import distance_gain, distance_gain_many
+    ds = np.array([0.5, 1.0, 10.0, 30.5, 40.0, 59.0, 60.0, 80.0])
+    many = distance_gain_many(ds, "linear", 1.0, 60.0, 2.0)
+    one = np.array([distance_gain(float(d), "linear", 1.0, 60.0, 2.0)
+                    for d in ds])
+    assert np.all(many >= 0.0) and np.all(one >= 0.0), (many, one)
+    assert np.allclose(many, one)
+    assert many[0] == 1.0 and many[1] == 1.0 and many[-1] == 0.0
+    assert many[2] > 0.0 and many[4] == 0.0       # 30.5m で 0 に届く
+    # rolloff が 1 のときは今までどおり
+    plain = distance_gain_many(ds, "linear", 1.0, 60.0, 1.0)
+    assert abs(plain[4] - (1.0 - 39.0 / 59.0)) < 1e-12
+    return f"40m で {many[4]:.3f}（直す前は -0.322）。rolloff 1 は変わらない"
+
+
+@test("review6: 精密版の尾と核の覚えは上限までで、長く使っていないものから捨てる")
+def t_review6_precise_memory_bound() -> str:
+    import audiospace.precise as precise
+    from audiospace.precise import SpaceIr
+    from audiospace.reverb import ConvolutionReverb
+    saved = dict(precise._MEMORY)
+    precise._MEMORY.clear()
+    try:
+        tail = np.zeros((2, 64), dtype=np.float32)
+        tail[:, 0] = 1.0
+        n = precise.MEMORY_MAX
+        for i in range(n):
+            precise._remember((f"k{i}", SR), SpaceIr(f"k{i}", "", tail, SR))
+        assert len(precise._MEMORY) == n
+        precise._MEMORY.move_to_end(("k0", SR))     # k0 を使った
+        precise._remember(("new", SR), SpaceIr("new", "", tail, SR))
+        assert len(precise._MEMORY) == n
+        assert ("k0", SR) in precise._MEMORY, "使ったばかりの尾を捨てた"
+        assert ("k1", SR) not in precise._MEMORY, "いちばん古い尾が残った"
+    finally:
+        precise._MEMORY.clear()
+        precise._MEMORY.update(saved)
+    engine = make_engine()
+    cap = engine.PRECISE_KERNELS_MAX
+    kernel = ConvolutionReverb(tail, block=BLOCK, normalise=False)
+    for i in range(cap):
+        engine._keep_kernel(f"k{i}", kernel)
+    engine._keep_kernel("k0", kernel)               # k0 を使った
+    engine._keep_kernel("new", kernel)
+    keys = list(engine._precise_kernels)
+    assert len(keys) == cap and "k0" in keys and "k1" not in keys, keys
+    return f"尾は {n} 個、核は {cap} 個まで。使ったものは残る"
+
 @test("review4: 遮蔽の地図はロックの外で作り、戸の開け閉めは作り直さない")
 def t_review4_occlusion_map_outside_lock() -> str:
     import audiospace.engine as engine_mod
@@ -5134,6 +5184,7 @@ TESTS = [
     # 2026-11-18 の古いモジュールのレビュー
     t_review6_resample_gain, t_review6_tail_level_band,
     t_review6_reject_bad_values, t_review6_nearest_rate,
+    t_review6_linear_not_negative, t_review6_precise_memory_bound,
 ]
 
 

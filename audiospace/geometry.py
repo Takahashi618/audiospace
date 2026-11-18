@@ -154,7 +154,10 @@ def distance_gain_many(distance: np.ndarray,
             # either; computing it for every element would divide by zero
             # (and warn from the audio thread every block).
             return np.where(d >= maximum, 0.0, 1.0)
-        lin = 1.0 - rolloff * (d - reference) / (maximum - reference)
+        # rolloff が 1 より大きいと、最大の距離の手前で 0 を下回る。負の
+        # 利得は位相が反転した音になり、遠いほど大きく鳴るので、0 で止める
+        lin = np.maximum(
+            0.0, 1.0 - rolloff * (d - reference) / (maximum - reference))
         return np.where(d >= maximum, 0.0,
                         np.where(d > reference, lin, 1.0))
     if model == "inverse_clamped":
@@ -235,8 +238,8 @@ def distance_gain(distance: float,
     if model == "linear":
         if d >= maximum:
             return 0.0
-        return float(1.0 - rolloff * (d - reference) / (maximum - reference)
-                     ) if d > reference else 1.0
+        return float(max(0.0, 1.0 - rolloff * (d - reference)
+                         / (maximum - reference))) if d > reference else 1.0
     if model == "inverse_clamped":
         d = min(max(d, reference), maximum)
     else:

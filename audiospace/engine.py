@@ -648,6 +648,15 @@ class SpatialEngine:
                         else:
                             self.remove_source(handle)
 
+    def _keep_kernel(self, key: str, kernel: ConvolutionReverb) -> None:
+        """精密版の核を覚える。PRECISE_KERNELS_MAX を超えたら、長く使って
+        いないものから捨てる（鳴らすのは複製なので、捨てても鳴っている
+        響きは切れない。次に使うとき、尾から作り直す）。"""
+        self._precise_kernels.pop(key, None)
+        self._precise_kernels[key] = kernel
+        while len(self._precise_kernels) > self.PRECISE_KERNELS_MAX:
+            del self._precise_kernels[next(iter(self._precise_kernels))]
+
     def remove_all_sources(self) -> list[Source]:
         """Release every source at once (no fade) and return them.
 
@@ -1119,6 +1128,8 @@ class SpatialEngine:
 
     # -- 部屋をまたぐ音の遮蔽 ----------------------------------------------
     #: 1ブロックで遮蔽を調べ直す音源の数の上限（残りは次のブロック）
+    #: 覚えておく精密版の核の数の上限（1つ数 MB）
+    PRECISE_KERNELS_MAX = 16
     OCCLUSION_BATCH = 16
     #: 遮蔽が変わるときの速さ（100ms あたり）
     OCCLUSION_DB_PER_100MS = 30.0
@@ -1436,6 +1447,7 @@ class SpatialEngine:
             key = space_key(space)
             kernel = self._precise_kernels.get(key)
             if kernel is not None:
+                self._keep_kernel(key, kernel)      # 使ったので後ろへ回す
                 self.late_status = _PRECISE_ON
                 return kernel.clone()
             if key in self._precise_pending:
@@ -1472,7 +1484,7 @@ class SpatialEngine:
             kernel = ConvolutionReverb(found.tail, block=self.block,
                                        normalise=False)
             with self._lock:
-                self._precise_kernels[key] = kernel
+                self._keep_kernel(key, kernel)
             return
         if not can_render_in_background():
             self.late_status = (_PRECISE_UNAVAILABLE + tr(
@@ -1510,7 +1522,7 @@ class SpatialEngine:
                         f"computing the precise reverb failed ({tail[0]}). "
                         "Playing the fast reverb")
                     return
-                self._precise_kernels[key] = kernel
+                self._keep_kernel(key, kernel)
                 current = self.space
                 if (current is not None and self._late_mode == "precise"
                         and space_key(current) == key):

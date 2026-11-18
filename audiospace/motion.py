@@ -75,8 +75,14 @@ class HeadWobble:
             return 0.0
         phase = (seconds * self.rate_hz) % 1.0
         if self.shape == "triangle":
-            # 0 -> 1 -> 0 -> -1 -> 0 を直線でつなぐ
-            wave = 4.0 * phase - 1.0 if phase < 0.5 else 3.0 - 4.0 * phase
+            # 0 -> 1 -> 0 -> -1 -> 0 を直線でつなぐ（サイン波と同じく 0 から
+            # 始める。端から始めると、切り替えた瞬間に音の方向が片側へ跳ぶ）
+            if phase < 0.25:
+                wave = 4.0 * phase
+            elif phase < 0.75:
+                wave = 2.0 - 4.0 * phase
+            else:
+                wave = 4.0 * phase - 4.0
         else:
             wave = math.sin(2.0 * math.pi * phase)
         return self.amplitude_deg * wave

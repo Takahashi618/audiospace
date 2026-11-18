@@ -39,7 +39,7 @@ audiospace のコードは、AI（Anthropic の Claude）が書きました。�
 - 動作の確認と、直すか直さないかの判断
 - 公開、問い合わせへの対応、保守
 
-コードは自動テスト（304件）と作者の実機での確認で検証しています。それでも、
+コードは自動テスト（307件）と作者の実機での確認で検証しています。それでも、
 人が書いたコードと同じく、誤りが残っている可能性があります。無保証です。
 
 日本の文化庁や米国の著作権局の考え方では、AI が書いた部分には著作権が
@@ -61,7 +61,7 @@ The author did not write the code. The author's part was:
 - Checking the behaviour and deciding what to fix.
 - Publishing, answering questions and maintenance.
 
-The code is checked by 304 automated tests and by the author on real
+The code is checked by 307 automated tests and by the author on real
 hardware, but like any code it may still contain mistakes. It comes without
 warranty.
 
@@ -90,8 +90,8 @@ under the MIT License.
 wheel を入れる場合（ファイル名は実物に合わせる）:
 
 ```
-python -m pip install audiospace-0.8.2-py3-none-any.whl
-python -m pip install "audiospace-0.8.2-py3-none-any.whl[playback]"
+python -m pip install audiospace-0.8.3-py3-none-any.whl
+python -m pip install "audiospace-0.8.3-py3-none-any.whl[playback]"
 ```
 
 2行目は実機再生も使う場合。wheel だけの環境では焼き込み済みの残響 IR が
@@ -988,12 +988,12 @@ audiospace のフォルダで次を実行する:
 python -X utf8 tests\run_all.py
 ```
 
-これで5スイート計304件がまとめて走る（無音設定は内部で行う。表示の言語は
+これで5スイート計307件がまとめて走る（無音設定は内部で行う。表示の言語は
 日本語に固定する）。
 個別に走らせる場合:
 
 ```
-set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_tests.py         (ドメイン171件)
+set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_tests.py         (ドメイン173件)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_motion_tests.py  (首振り11件)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_quiz_tests.py    (クイズ39件)
 set AUDIOSPACE_SILENT=1 && python -X utf8 tests\run_records_tests.py (記録23件)

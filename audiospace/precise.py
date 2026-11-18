@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -297,7 +298,17 @@ def _band_rt60(ir: np.ndarray, sample_rate: int) -> np.ndarray:
     return np.asarray(out)
 
 
-_MEMORY: dict[tuple[str, int], SpaceIr] = {}
+#: 覚えておく尾の数の上限（1つ 1〜2MB）。超えたら、長く使っていないものから
+#: 捨てる（捨てた尾は、次に使うときファイルから読み直す）
+MEMORY_MAX = 16
+_MEMORY: OrderedDict[tuple[str, int], SpaceIr] = OrderedDict()
+
+
+def _remember(key: tuple[str, int], tail: SpaceIr) -> None:
+    _MEMORY[key] = tail
+    _MEMORY.move_to_end(key)
+    while len(_MEMORY) > MEMORY_MAX:
+        _MEMORY.popitem(last=False)
 
 
 def find_space_ir(space: Space, sample_rate: int,
@@ -310,6 +321,7 @@ def find_space_ir(space: Space, sample_rate: int,
     key = space_key(space)
     hit = _MEMORY.get((key, int(sample_rate)))
     if hit is not None:
+        _MEMORY.move_to_end((key, int(sample_rate)))
         return hit
     # cache_dir が無いときは、start_render_process が書く既定の場所を探す
     # （探さないと、計算した尾が次に起動したとき見つからず、毎回計算し直す）
@@ -331,7 +343,7 @@ def find_space_ir(space: Space, sample_rate: int,
                          .resampled(int(sample_rate)))
             except Exception:                    # noqa: BLE001
                 continue
-            _MEMORY[(key, int(sample_rate))] = found
+            _remember((key, int(sample_rate)), found)
             return found
     return None
 
@@ -350,7 +362,7 @@ def get_space_ir(space: Space, sample_rate: int,
     made = render_space_ir(space, sample_rate)
     if made is None:
         return None
-    _MEMORY[(made.key, int(sample_rate))] = made
+    _remember((made.key, int(sample_rate)), made)
     if cache_dir:
         made.save(Path(cache_dir) / f"{made.key}_{int(sample_rate)}.npz")
     return made

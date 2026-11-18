@@ -250,7 +250,24 @@ def t_swap_resample() -> str:
     return f"44100Hz の HRTF を渡して {engine.hrir.sample_rate}Hz に変換"
 
 
-TESTS = [t_range, t_period, t_triangle, t_validation, t_presets,
+@test("HeadWobble: 三角波もサイン波と同じく 0 から始まり、端で折り返す")
+def t_triangle_starts_at_zero() -> str:
+    w = HeadWobble(14.0, 0.35, "triangle")
+    period = 1.0 / w.rate_hz
+    got = [w.offset_at(period * f) for f in (0.0, 0.25, 0.5, 0.75, 1.0)]
+    want = [0.0, 14.0, 0.0, -14.0, 0.0]
+    assert np.allclose(got, want, atol=1e-9), got
+    # 途中で跳ばない（1ミリ秒ごとの変化が、傾きから決まる大きさを超えない）
+    ts = np.arange(0.0, 2 * period, 0.001)
+    steps = np.abs(np.diff([w.offset_at(float(t)) for t in ts]))
+    limit = 4.0 * 14.0 * w.rate_hz * 0.001 * 1.001
+    assert steps.max() <= limit, (steps.max(), limit)
+    s = HeadWobble(14.0, 0.35)
+    assert abs(s.offset_at(0.0)) < 1e-12
+    return "時刻 0 は 0度、4分の1周期で +14度、4分の3周期で -14度"
+
+
+TESTS = [t_range, t_period, t_triangle, t_triangle_starts_at_zero, t_validation, t_presets,
          t_engine_moves, t_front_back_opposite, t_effective_yaw,
          t_partial_update, t_swap_hrir, t_swap_resample]
 
